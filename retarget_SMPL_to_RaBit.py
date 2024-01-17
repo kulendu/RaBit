@@ -3,12 +3,26 @@ import torch.nn as nn
 import numpy as np
 import openmesh as om
 from eye_reconstructor import Eye_reconstructor
+import sys
+import joblib
+import pickle
+
+from renderer import Visualizer
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
 
 import warnings
 # the UserWarning can be ignored
 warnings.filterwarnings("ignore", category=UserWarning)
 
-device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+# device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+device = 'cpu'
 
 
 class RabitModel_eye(nn.Module):
@@ -29,6 +43,41 @@ class RabitModel_eye(nn.Module):
         self.prepare()
 
         self.additional_7kp_index = np.load('./rabit_data/shape/toe_tumb_nose_ear.npy', allow_pickle=True)
+
+    def init_params(self, batch_size):
+        
+        rabit_params = {}
+        rabit_params["theta"] = torch.zeros(batch_size, 72)
+
+        # rabit_params["theta"][:,:3] = torch.from_numpy(np.tile(ROOT_INIT_ROTVEC[None,:],(batch_size,1))) # ROTATION VECTOR to initialize root joint orientation 
+        rabit_params["theta"].requires_grad = True
+
+        rabit_params["trans"] = torch.zeros(batch_size, 3)
+        rabit_params["trans"].requires_grad = True
+
+        rabit_params["beta"] = torch.ones((1, 100)).to(device)*0.5
+        # rabit_params["beta"][0] = 5
+        # rabit_params["beta"][1] = 0
+
+        # rabit_params["beta"][self.cfg.TRAIN.MAX_BETA_UPDATE_DIM:] = 0
+        rabit_params["beta"].requires_grad = False
+
+        rabit_params["scale"] = torch.ones([1])
+        rabit_params["scale"].requires_grad = False
+
+        rabit_params["offset"] = torch.zeros((24,3))
+        rabit_params["offset"].requires_grad = False
+
+        print('trans shape ---', rabit_params['trans'].shape)
+
+
+        for k in rabit_params: 
+            rabit_params[k] = nn.Parameter(rabit_params[k].to(device),requires_grad=rabit_params[k].requires_grad)
+            self.register_parameter(k,rabit_params[k])
+        self.rabit_params = rabit_params
+
+        self.rabit_params['beta'] = self.rabit_params['beta'].repeat(batch_size,1)
+
 
     def forward(self, beta, pose, trans):
         # NOTE: forward infer
@@ -124,7 +173,10 @@ class RabitModel_eye(nn.Module):
             eyes_list[i] = eye_mesh
 
         posed_vertices = torch.matmul(T, rest_shape_h).reshape(B, -1, 4)[:, :, :3]
+        print('shape of posed_vertices -- ', posed_vertices.shape)
+        print('shape of trans ---', trans.shape)
         posed_vertices = posed_vertices + trans
+
 
         skeleton = []
         for i in range(len(self.index2cluster)):  # rotate keypoints
@@ -257,7 +309,60 @@ class RabitModel_eye(nn.Module):
         return
 
 
-if __name__ == '__main__':
+def load_SMPL_data(filepath):
+    # Inspect the output file content
+    # joints3d : ground truth data
+    output = joblib.load(filepath)
+    print('Track ids:', output.keys(), end='\n\n')
+
+    pose = output[1]['pose']
+    print(output[1].keys())
+
+    return output[1]
+
+
+def load_SMPL_model():
+    with open('./SMPL_NEUTRAL.pkl', 'rb') as smpl_file:
+        smpl_model = pickle.load(smpl_file, encoding='latin1')
+
+    print('SMPL keys ---', smpl_model.keys())
+
+    return smpl_model
+
+
+RaBit_to_SMPL_joint_correspondences = [
+ [[0, 12], 0],
+ [[1, 0], 1],
+ [[2, 3], 2],
+ [[3, 9], 3],
+ [[4, 16], 4],
+ [[5, 18], 5],
+ [[6, 18], 6],
+ [[7, 20], 7],
+ [[8, 22], 8],
+ [[10, 15], 10],
+ [[11, 1], 11],
+ [[12, 4], 12],
+ [[13, 2], 13],
+ [[14, 5],  14],
+ [[15, 7], 15],
+ [[16, 10], 16],
+ [[17, 17], 17],
+ [[19, 19], 19],
+ [[20, 21], 20],
+ [[21, 23], 21],
+ [[22, 8], 22],
+ [[23, 11], 23]
+]
+
+
+def train(filepath):
+    SMPL_model = load_SMPL_model()
+    SMPL_data = load_SMPL_data(filepath)
+    SMPL_data['joints3d'] = SMPL_data['joints3d'][:10]
+    SMPL_data['verts'] = SMPL_data['verts'][:10]
+
+    joints3d = torch.from_numpy(SMPL_data['joints3d']).to(torch.float32)
     # load some info
     mesh = om.read_polymesh('./rabit_data/shape/mean.obj')
     faces = mesh.face_vertex_indices()
@@ -265,20 +370,57 @@ if __name__ == '__main__':
     rabit = RabitModel_eye(beta_norm=True, theta_norm=True)
 
     # random
-    beta = torch.ones((1, 100)).to(device)*0.5
-    theta = torch.ones((1, 72)).to(device)*0.5
-    trans = torch.zeros((1, 3)).to(device)
+    # beta = torch.ones((1, 100)).to(device)*0.5
+    # theta = torch.ones((1, 72)).to(device)*0.5
+    # trans = torch.zeros((1, 3)).to(device)
     
     # You can also load some pose.npy from dataset here
     temp = np.zeros((24, 3)) # temp = np.load("../pose.npy")
-    theta = torch.from_numpy(temp).to(device)
-    theta = theta.reshape(1,72).float()
+    # theta = torch.from_numpy(temp).to(device)
+    # theta = theta.reshape(1,72).float()
     rabit = RabitModel_eye(beta_norm=True, theta_norm=False)
+    rabit.init_params(joints3d.shape[0])
 
-    body_mesh_points, kps, eyes = rabit(beta, theta, trans)
+    rabit_joints = []
+    SMPL_joints = []
+    
+    for coresp, index in RaBit_to_SMPL_joint_correspondences:
+        print(coresp)
+        rabit_joints.append(coresp[0])
+        SMPL_joints.append(coresp[1])
+
+
+    rabit_joints = np.array(rabit_joints).astype(int)
+    SMPL_joints = np.array(SMPL_joints).astype(int)
+
+    print('RaBit joints --', rabit_joints)
+    print('SMPL joints -- ', SMPL_joints)
+    print('SMPL vertices shape --', SMPL_data['verts'].shape)
+
+    # initial coordinates
+    vis = Visualizer()
+    body_mesh_points, kps, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
     body_mesh_points = body_mesh_points.detach().cpu().numpy().reshape(-1, 3)
+    vis.render_rabit(rabit, SMPL_data, SMPL_model, video_dir='test.mp4')
+    # defining the test data
+    for steps in range(200):
+        body_mesh_points, kps, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
+        l2_loss = kps[:, rabit_joints, :] - joints3d[:, SMPL_joints, :] #this is a vector
+        l2_loss = (l2_loss**2).mean #converting to scalar
+        break
+
+    print('Joint3D shape', joints3d.shape)
+    print('kps shape', kps.shape)
+
+    
 
     mesh = om.PolyMesh(points=body_mesh_points, face_vertex_indices=faces)
     om.write_mesh("output/rabit.obj", mesh)
     om.write_mesh("output/rabit_eyes.obj", eyes[0])
     print("the .obj model with its eyes has been generated")
+
+
+if __name__ == '__main__':
+    filepath =  sys.argv[1] 
+    train(filepath)
+    

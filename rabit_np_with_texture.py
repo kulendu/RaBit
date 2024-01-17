@@ -4,7 +4,8 @@ import os
 import openmesh as om
 import texture_util
 import shutil
-
+import matplotlib.pyplot as plt
+import pickle
 
 class RaBitModel():
     """
@@ -148,7 +149,9 @@ class RaBitModel():
 
         """
         if pose is not None:
+            print('Pose Shape ---', pose.shape)
             pose = pose[self.reorder_index, :]
+            print('self.reorder ---', self.reorder_index)
             self.pose = pose[1:,:]
         if beta is not None:
             self.beta = beta
@@ -293,6 +296,13 @@ class RaBitModel():
             minval = index_val.min(axis=0, keepdims=True)
             J.append((maxval + minval) / 2)
         J = np.concatenate(J)
+
+        # print(len(J))
+        # print(J[12])
+
+        # with open('joints_list.pkl', 'wb') as f:
+        #     pickle.dump(J, f)
+
         return J
 
     def save_to_obj_with_texture(self, path):
@@ -361,12 +371,12 @@ class RaBitModel():
                         new_line += " " + splits[0] + "/" + splits[1]
                 new_line += "\n"
                 file_out.write(new_line)
-        texture_util.generate_texture("output/m_t.png")
+        # texture_util.generate_texture("output/m_t.png")
 
 
 if __name__ == '__main__':
-    os.makedirs("output/", exist_ok=True)
-    save_path = "output/m_t.obj"
+    # os.makedirs("output/", exist_ok=True)
+    # save_path = "output/m_t.obj"
     np.random.seed(2)
 
     rabit = RaBitModel()
@@ -380,5 +390,5 @@ if __name__ == '__main__':
     trans = np.zeros(rabit.trans_shape)
 
     rabit.set_params(beta=beta, pose=theta, trans=trans)
-    rabit.save_to_obj_with_texture(save_path)
-    print("Mesh:", save_path)
+    # rabit.save_to_obj_with_texture(save_path)
+    # print("Mesh:", save_path)
