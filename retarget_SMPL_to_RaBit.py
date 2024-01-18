@@ -368,16 +368,7 @@ def train(filepath):
     faces = mesh.face_vertex_indices()
 
     rabit = RabitModel_eye(beta_norm=True, theta_norm=True)
-
-    # random
-    # beta = torch.ones((1, 100)).to(device)*0.5
-    # theta = torch.ones((1, 72)).to(device)*0.5
-    # trans = torch.zeros((1, 3)).to(device)
     
-    # You can also load some pose.npy from dataset here
-    temp = np.zeros((24, 3)) # temp = np.load("../pose.npy")
-    # theta = torch.from_numpy(temp).to(device)
-    # theta = theta.reshape(1,72).float()
     rabit = RabitModel_eye(beta_norm=True, theta_norm=False)
     rabit.init_params(joints3d.shape[0])
 
@@ -385,7 +376,6 @@ def train(filepath):
     SMPL_joints = []
     
     for coresp, index in RaBit_to_SMPL_joint_correspondences:
-        print(coresp)
         rabit_joints.append(coresp[0])
         SMPL_joints.append(coresp[1])
 
@@ -401,7 +391,7 @@ def train(filepath):
     vis = Visualizer()
     body_mesh_points, kps, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
     body_mesh_points = body_mesh_points.detach().cpu().numpy().reshape(-1, 3)
-    vis.render_rabit(rabit, SMPL_data, SMPL_model, video_dir='test.mp4')
+    vis.render_rabit(rabit, SMPL_data, SMPL_model, video_dir='demo')
     # defining the test data
     for steps in range(200):
         body_mesh_points, kps, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
