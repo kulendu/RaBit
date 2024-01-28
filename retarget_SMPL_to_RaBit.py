@@ -70,7 +70,7 @@ class RabitModel_eye(nn.Module):
 
         print('trans shape ---', rabit_params['trans'].shape)
 
-        self.learning_rate = 1e-3
+        self.learning_rate = 1e-2
 
         for k in rabit_params: 
             rabit_params[k] = nn.Parameter(rabit_params[k].to(device),requires_grad=rabit_params[k].requires_grad)
@@ -398,7 +398,7 @@ def train(filepath):
     vis = Visualizer()
     body_mesh_points, kps, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
     body_mesh_points = body_mesh_points.detach().cpu().numpy().reshape(-1, 3)
-    # vis.render_rabit(rabit, SMPL_data, SMPL_model, video_dir='demo')
+    vis.render_rabit(rabit, SMPL_data, SMPL_model, video_dir='demo')
     # print('Shape of Theta---- ', rabit.rabit_params['theta'].shape)
     
     # defining the test data
@@ -419,9 +419,9 @@ def train(filepath):
         # print('Trans --  after L2 Loss -- ', rabit.rabit_params['trans'])
 
         print('-----------Running for ', steps, '-------------') 
-        print('Pose Params of Rabit ----- ', rabit.rabit_params['theta'])
-        # print('Shape of the root joint: ----- ', rabit.rabit_params['theta'][:, 0,3])
-        break
+        # print('Pose Params of Rabit ----- ', rabit.rabit_params['theta'])
+        print('Shape of the root joint: ----- ', rabit.rabit_params['theta'][:, 6:9])
+        # break
 
     # print('Joint3D shape', joints3d.shape)
     # print('kps shape', kps.shape)
@@ -429,10 +429,10 @@ def train(filepath):
     
     vis.render_rabit(rabit, SMPL_data, SMPL_model, video_dir='demo')
 
-    mesh = om.PolyMesh(points=body_mesh_points, face_vertex_indices=faces)
-    om.write_mesh("output/rabit.obj", mesh)
-    om.write_mesh("output/rabit_eyes.obj", eyes[0])
-    print("the .obj model with its eyes has been generated")    
+    # mesh = om.PolyMesh(points=body_mesh_points, face_vertex_indices=faces)
+    # om.write_mesh("output/rabit.obj", mesh)
+    # om.write_mesh("output/rabit_eyes.obj", eyes[0])
+    # print("the .obj model with its eyes has been generated")    
     
 
 
