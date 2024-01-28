@@ -70,6 +70,7 @@ class RabitModel_eye(nn.Module):
 
         print('trans shape ---', rabit_params['trans'].shape)
 
+        self.learning_rate = 1e-3
 
         for k in rabit_params: 
             rabit_params[k] = nn.Parameter(rabit_params[k].to(device),requires_grad=rabit_params[k].requires_grad)
@@ -78,6 +79,12 @@ class RabitModel_eye(nn.Module):
 
         self.rabit_params['beta'] = self.rabit_params['beta'].repeat(batch_size,1)
 
+        self.optimizer = optim.Adam([{'params': self.rabit_params["scale"], 'lr': self.learning_rate},
+                        {'params': self.rabit_params["beta"], 'lr': self.learning_rate},
+                        {'params': self.rabit_params["theta"], 'lr': self.learning_rate},{'params': self.rabit_params["trans"], 
+                                                                                                         'lr': self.learning_rate},
+                        {'params': self.rabit_params["offset"], 'lr': self.learning_rate}])
+                         
 
     def forward(self, beta, pose, trans):
         # NOTE: forward infer
@@ -87,7 +94,7 @@ class RabitModel_eye(nn.Module):
         trans = trans.unsqueeze(1)  # [1, 1, 3]
 
         if self.beta_norm:
-            print("minus_mat: ", self.minus_mat.shape, "beta.shape: ", beta.shape, "range_mat:", self.range_mat.shape)
+            # print("minus_mat: ", self.minus_mat.shape, "beta.shape: ", beta.shape, "range_mat:", self.range_mat.shape)
             beta = beta * self.range_mat + self.minus_mat
 
         if self.theta_norm:
@@ -173,8 +180,8 @@ class RabitModel_eye(nn.Module):
             eyes_list[i] = eye_mesh
 
         posed_vertices = torch.matmul(T, rest_shape_h).reshape(B, -1, 4)[:, :, :3]
-        print('shape of posed_vertices -- ', posed_vertices.shape)
-        print('shape of trans ---', trans.shape)
+        # print('shape of posed_vertices -- ', posed_vertices.shape)
+        # print('shape of trans ---', trans.shape)
         posed_vertices = posed_vertices + trans
 
 
@@ -383,31 +390,50 @@ def train(filepath):
     rabit_joints = np.array(rabit_joints).astype(int)
     SMPL_joints = np.array(SMPL_joints).astype(int)
 
-    print('RaBit joints --', rabit_joints)
-    print('SMPL joints -- ', SMPL_joints)
-    print('SMPL vertices shape --', SMPL_data['verts'].shape)
+    # print('RaBit joints --', rabit_joints)
+    # print('SMPL joints -- ', SMPL_joints)
+    # print('SMPL vertices shape --', SMPL_data['verts'].shape)
 
     # initial coordinates
     vis = Visualizer()
     body_mesh_points, kps, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
     body_mesh_points = body_mesh_points.detach().cpu().numpy().reshape(-1, 3)
-    vis.render_rabit(rabit, SMPL_data, SMPL_model, video_dir='demo')
+    # vis.render_rabit(rabit, SMPL_data, SMPL_model, video_dir='demo')
+    # print('Shape of Theta---- ', rabit.rabit_params['theta'].shape)
+    
     # defining the test data
-    for steps in range(200):
+    for steps in range(50):
         body_mesh_points, kps, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
-        l2_loss = kps[:, rabit_joints, :] - joints3d[:, SMPL_joints, :] #this is a vector
-        l2_loss = (l2_loss**2).mean #converting to scalar
+        l2_loss = kps[:, rabit_joints, :] - joints3d[:, SMPL_joints, :] # this is a vector
+        l2_loss = (l2_loss**2).mean() # converting to scalar
+        print('L2 Loss --- ', l2_loss)
+        # print('KPS Shape: ', kps[:, rabit_joints, :].shape)
+        # print('Joints3D shape: ', joints3d[:, SMPL_joints, :].shape)
+
+        rabit.optimizer.zero_grad() # setting gradients to 0
+        l2_loss.backward()
+        rabit.optimizer.step() # updating the pose and shape params
+
+
+        # print('Theta -- after the L2 Loss---', rabit.rabit_params['theta'].grad)
+        # print('Trans --  after L2 Loss -- ', rabit.rabit_params['trans'])
+
+        print('-----------Running for ', steps, '-------------') 
+        print('Pose Params of Rabit ----- ', rabit.rabit_params['theta'])
+        # print('Shape of the root joint: ----- ', rabit.rabit_params['theta'][:, 0,3])
         break
 
-    print('Joint3D shape', joints3d.shape)
-    print('kps shape', kps.shape)
+    # print('Joint3D shape', joints3d.shape)
+    # print('kps shape', kps.shape)
 
     
+    vis.render_rabit(rabit, SMPL_data, SMPL_model, video_dir='demo')
 
     mesh = om.PolyMesh(points=body_mesh_points, face_vertex_indices=faces)
     om.write_mesh("output/rabit.obj", mesh)
     om.write_mesh("output/rabit_eyes.obj", eyes[0])
-    print("the .obj model with its eyes has been generated")
+    print("the .obj model with its eyes has been generated")    
+    
 
 
 if __name__ == '__main__':

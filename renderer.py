@@ -45,7 +45,9 @@ class Visualizer:
 
 
 		bbox_smpl = SMPL_data['verts'].max(axis=(0,1))  - SMPL_data['verts'].min(axis=(0,1))
-		bbox_target = rabit_verts.max(axis=0)  - rabit_verts.min(axis=0)
+		bbox_target = rabit_verts.max(axis=(0,1))  - rabit_verts.min(axis=(0,1))
+		# bbox_target = bbox_target.detach().cpu().numpy()
+		print('Shape of BBox target -', bbox_target)
 
 		bbox = bbox_smpl if np.linalg.norm(bbox_smpl) > np.linalg.norm(bbox_target) else bbox_target
 		object_position = SMPL_data['joints3d'][0,0]
@@ -97,7 +99,8 @@ class Visualizer:
 		os.makedirs(os.path.join(video_dir,"images"),exist_ok=True)
 		os.makedirs(os.path.join(video_dir,"video"),exist_ok=True)
 
-		ps.show() 
+		ps.show()
+		 
 		print(f'Rendering images:')
 		for i in tqdm(range(SMPL_data['verts'].shape[0])):
 			ps_smpl_mesh.update_vertex_positions(self.reflect_opengl(SMPL_data['verts'][i]))
