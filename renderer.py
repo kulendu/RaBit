@@ -87,7 +87,6 @@ class Visualizer:
 		
 		rabit_bone_array = np.array([[i,p] for i,p in enumerate(rabit.parent)],dtype=np.int64)
 		rabit_bone_array[0,1] = 0
-		print(rabit_bone_array,rabit_joints.shape)
 
 		ps_rabit_skeleton = ps.register_curve_network(f"RaBit Skeleton",rabit_joints[0],rabit_bone_array,color=np.array([1,0,0]))
 
@@ -102,7 +101,7 @@ class Visualizer:
 		ps.show()
 		 
 		print(f'Rendering images:')
-		for i in tqdm(range(SMPL_data['verts'].shape[0])):
+		for i in tqdm(range(T)):
 			ps_smpl_mesh.update_vertex_positions(self.reflect_opengl(SMPL_data['verts'][i]))
 			ps_smpl_skeleton.update_node_positions(self.reflect_opengl(SMPL_data['joints3d'][i,SMPL_joints_to_show]))
 			ps_rabit_mesh.update_vertex_positions(rabit_verts[i])
