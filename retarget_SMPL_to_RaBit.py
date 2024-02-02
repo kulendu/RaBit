@@ -421,7 +421,7 @@ def train(filepath):
         print('-----------Running for ', steps, '-------------') 
         # print('Pose Params of Rabit ----- ', rabit.rabit_params['theta'])
         print('Shape of the root joint: ----- ', rabit.rabit_params['theta'][:, 6:9])
-        # break
+        break
 
     # print('Joint3D shape', joints3d.shape)
     # print('kps shape', kps.shape)
