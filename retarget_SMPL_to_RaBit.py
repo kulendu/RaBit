@@ -1,11 +1,14 @@
+import sys
+import joblib
+import pickle
+
+import argparse
+
 import torch
 import torch.nn as nn
 import numpy as np
 import openmesh as om
 from eye_reconstructor import Eye_reconstructor
-import sys
-import joblib
-import pickle
 
 from renderer import Visualizer
 
@@ -54,6 +57,8 @@ class RabitModel_eye(nn.Module):
 
         rabit_params["trans"] = torch.zeros(batch_size, 3)
         rabit_params["trans"].requires_grad = True
+
+        print("Using device:",device)
 
         rabit_params["beta"] = torch.ones((1, 100)).to(device)*0.5
         # rabit_params["beta"][0] = 5
@@ -363,13 +368,19 @@ RaBit_to_SMPL_joint_correspondences = [
 ]
 
 
-def train(filepath):
+def train(args):
+
+    filepath =  args.file
+
     SMPL_model = load_SMPL_model()
     SMPL_data = load_SMPL_data(filepath)
-    SMPL_data['joints3d'] = SMPL_data['joints3d'][:10]
-    SMPL_data['verts'] = SMPL_data['verts'][:10]
+
+    if args.debug: 
+        SMPL_data['joints3d'] = SMPL_data['joints3d'][:10]
+        SMPL_data['verts'] = SMPL_data['verts'][:10]
 
     joints3d = torch.from_numpy(SMPL_data['joints3d']).to(torch.float32)
+    joints3d = joints3d.to(device)
     # load some info
     mesh = om.read_polymesh('./rabit_data/shape/mean.obj')
     faces = mesh.face_vertex_indices()
@@ -398,7 +409,7 @@ def train(filepath):
     vis = Visualizer()
     body_mesh_points, kps, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
     body_mesh_points = body_mesh_points.detach().cpu().numpy().reshape(-1, 3)
-    vis.render_rabit(rabit, SMPL_data, SMPL_model, video_dir='demo')
+    # vis.render_rabit(rabit, SMPL_data, SMPL_model, video_dir='demo')
     # print('Shape of Theta---- ', rabit.rabit_params['theta'].shape)
     
     # defining the test data
@@ -421,7 +432,6 @@ def train(filepath):
         print('-----------Running for ', steps, '-------------') 
         # print('Pose Params of Rabit ----- ', rabit.rabit_params['theta'])
         print('Shape of the root joint: ----- ', rabit.rabit_params['theta'][:, 6:9])
-        break
 
     # print('Joint3D shape', joints3d.shape)
     # print('kps shape', kps.shape)
@@ -437,6 +447,26 @@ def train(filepath):
 
 
 if __name__ == '__main__':
-    filepath =  sys.argv[1] 
-    train(filepath)
+
+
+    ############################# Command line Argument Parser #######################################################
+    parser = argparse.ArgumentParser(
+                        prog='Retargetting',
+                        description='Retargets from SMPL to RaBit',
+                        epilog='')
+    parser.add_argument('--file',type=str,help="Path to .trc file that needs to be retargeted.")  # path to trc file
+    parser.add_argument('-f', '--force',action='store_true',help="forces a re-run on retargetting even if pkl file containg smpl data is already present.")  # on/off flag
+    parser.add_argument('--render', action='store_true', help="Render a video and save it it in RENDER_DIR. Can also be set in the utils.py")  # on/off flag
+    parser.add_argument('--debug', action='store_true', help="Debug and run on less number of frames")
+    parser.add_argument('--gpu', action='store_true', help="Whether to use CUDA or CPU")
+
+
+    cmd_line_args = parser.parse_args()
+
+    print("GPU:",cmd_line_args.gpu)
+
+    if cmd_line_args.gpu: 
+        device = 'cuda' 
+
+    train(cmd_line_args)
     
