@@ -31,81 +31,90 @@ class Visualizer:
 	
 
 
-	def render_rabit(self, rabit, SMPL_data, SMPL_model, video_dir=None): 
+	def render_rabit(self, rabit_data, SMPL_data, SMPL_model, corresp=None,video_dir=None): 
+		"""
+			Corresp contains a 2xN np.ndarray 
+			which represents the correspondence between the SMPL and RaBit joints
+		"""
 
-		T = SMPL_data['joints3d'].shape[0]
+		
 
-
-
-
-		# # Load 0th frame and get params
-		body_mesh_points, kps, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
-		rabit_verts = body_mesh_points.detach().cpu().numpy()
-		rabit_joints  = kps.detach().cpu().numpy()
-
+		T = SMPL_data['smpl_joints'].shape[0]
 
 		bbox_smpl = SMPL_data['verts'].max(axis=(0,1))  - SMPL_data['verts'].min(axis=(0,1))
-		bbox_target = rabit_verts.max(axis=(0,1))  - rabit_verts.min(axis=(0,1))
-		# bbox_target = bbox_target.detach().cpu().numpy()
-		print('Shape of BBox target -', bbox_target)
+		bbox_rabit = rabit_data['verts'].max(axis=(0,1))  - rabit_data['verts'].min(axis=(0,1))
+		# bbox_rabit = bbox_rabit.detach().cpu().numpy()
+		print('Shape of BBox target -', bbox_rabit)
 
-		bbox = bbox_smpl if np.linalg.norm(bbox_smpl) > np.linalg.norm(bbox_target) else bbox_target
-		object_position = SMPL_data['joints3d'][0,0]
+		bbox = bbox_smpl if np.linalg.norm(bbox_smpl) > np.linalg.norm(bbox_rabit) else bbox_rabit
+		object_position = SMPL_data['smpl_joints'][0,0]
 
 		# camera_position = np.array([0,0,3*self.ps_data['bbox'][0]])
-		camera_position = np.array([7*bbox[0],0,0]) + object_position
+		camera_position = np.array([0,0,3*bbox[0]]) + object_position
 		look_at_position = np.array([0,0,0]) + object_position
 		ps.look_at(camera_position,look_at_position)
 
 		# Translate objects to visualize 
-		SMPL_data['joints3d'] += (np.array([0,0,+0.5])*bbox).reshape((1,-1,3))  
-		SMPL_data['verts'] += (np.array([0, 0, +0.5]) * bbox).reshape((1,-1,3))
+		# SMPL_data['smpl_joints'] += (np.array([0,0,+0.5])*bbox).reshape((1,-1,3))  
+		# SMPL_data['verts'] += (np.array([0, 0, +0.5]) * bbox).reshape((1,-1,3))
 
-		rabit_joints += (np.array([0,0,-0.5])*bbox).reshape((1,3))  
-		rabit_verts += (np.array([0, 0, -0.5]) * bbox).reshape((1,3))
+		# rabit_data['joints3d'] += (np.array([0,0,-0.5])*bbox).reshape((1,3))  
+		# rabit_data['verts'] += (np.array([0, 0, -0.5]) * bbox).reshape((1,3))
 
-		# Initial plot
+
+		# SMPL_data['smpl_joints'] = self.reflect_opengl(SMPL_data['smpl_joints'])
+		# SMPL_data['verts'] = self.reflect_opengl(SMPL_data['verts'])
+
+		# rabit_data['joints3d'] = self.reflect_opengl(rabit_data['joints3d'])
+		# rabit_data['verts'] = self.reflect_opengl(rabit_data['verts'])
+
+
+
 		ps.remove_all_structures()
 
-		# Plot SMPL Mesh
-		ps_smpl_mesh = ps.register_surface_mesh('SMPL Mesh', self.reflect_opengl(SMPL_data['verts'][0]), SMPL_model.get('f'),transparency=0.5)
+		# Initial plot
+		# SMPL Mesh
+		ps_smpl_mesh = ps.register_surface_mesh('SMPL Mesh', SMPL_data['verts'][0], SMPL_model.get('f'),transparency=0.5)
 
+		# SMPL Skeleton 
+		smpl_bone_array = np.array([ [i,p]  for i,p in enumerate(SMPL_model['parent_array'])])
+		ps_smpl_skeleton = ps.register_curve_network(f"SMPL Skeleton",SMPL_data['smpl_joints'][0], smpl_bone_array,color=np.array([1,0,0]))
+
+		# Rabit Mesh 
+		ps_rabit_mesh = ps.register_surface_mesh('RaBit Mesh',rabit_data['verts'][0],rabit_data['faces'],transparency=0.5)
 		
-
-		SMPL_joints_to_show = np.array([8, 12, 9,  13, 10,  14, 11,  20, 23, 1,   0, 5, 2, 6, 3, 7, 4,  ]) # Mapping of the JOINT_NAMES from VIBE <-- SMPL
-
-		SMPL_data['parent_array'] = np.array([0,0,0,1,2,3,4,5,6,9,9,9,9,11,12,13,14,])
-		
-		# SMPL_data["parent_array"] = SMPL_model['kintree_table'][0] 
-		# SMPL_data['parent_array'][0] = 0
-
-		smpl_bone_array = np.array([ [i,p]  for i,p in enumerate(SMPL_data['parent_array'])])
-		
-		ps_smpl_skeleton = ps.register_curve_network(f"SMPL Skeleton",self.reflect_opengl(SMPL_data['joints3d'][0, SMPL_joints_to_show]), smpl_bone_array,color=np.array([1,0,0]))
-
-		ps_rabit_mesh = ps.register_surface_mesh('RaBit Mesh',rabit_verts[0],rabit.faces,transparency=0.5)
-		
-		rabit_bone_array = np.array([[i,p] for i,p in enumerate(rabit.parent)],dtype=np.int64)
+		rabit_bone_array = np.array([[i,p] for i,p in enumerate(rabit_data['parent'])],dtype=np.int64)
 		rabit_bone_array[0,1] = 0
 
-		ps_rabit_skeleton = ps.register_curve_network(f"RaBit Skeleton",rabit_joints[0],rabit_bone_array,color=np.array([1,0,0]))
+		ps_rabit_skeleton = ps.register_curve_network(f"RaBit Skeleton",rabit_data['joints3d'][0],rabit_bone_array,color=np.array([1,0,0]))
+
+
+		# Plot correspondence 
+		if corresp is not None: 
+			print("Corresp:",corresp,corresp.shape)
+			corresp_nodes = np.concatenate([ SMPL_data['smpl_joints'][0,corresp[0,:]], rabit_data['joints3d'][0,corresp[1,:]]  ], axis=0)
+			corresp_edges = np.array([  (i, i+corresp.shape[1])  for i in range(corresp.shape[1])])
+
+			ps_corresp = ps.register_curve_network("Skeleton Correspodence", corresp_nodes,corresp_edges)
+
 
 		if video_dir is None:
 			ps.show()
 			return 
 		
+
+
+
 		os.makedirs(video_dir,exist_ok=True)
 		os.makedirs(os.path.join(video_dir,"images"),exist_ok=True)
 		os.makedirs(os.path.join(video_dir,"video"),exist_ok=True)
 
-		ps.show()
-		 
 		print(f'Rendering images:')
 		for i in tqdm(range(T)):
-			ps_smpl_mesh.update_vertex_positions(self.reflect_opengl(SMPL_data['verts'][i]))
-			ps_smpl_skeleton.update_node_positions(self.reflect_opengl(SMPL_data['joints3d'][i,SMPL_joints_to_show]))
-			ps_rabit_mesh.update_vertex_positions(rabit_verts[i])
-			ps_rabit_skeleton.update_node_positions(rabit_joints[i])
+			ps_smpl_mesh.update_vertex_positions(SMPL_data['verts'][i])
+			ps_smpl_skeleton.update_node_positions(SMPL_data['smpl_joints'][i])
+			ps_rabit_mesh.update_vertex_positions(rabit_data['verts'][i])
+			ps_rabit_skeleton.update_node_positions(rabit_data['joints3d'][i])
 
 			image_path = os.path.join(video_dir,"images",f"smpl_{i}.png")
 			# print(f"Saving plot to :{image_path}")	
