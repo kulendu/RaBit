@@ -47,6 +47,11 @@ class RabitModel_eye(nn.Module):
 
         self.additional_7kp_index = np.load('./rabit_data/shape/toe_tumb_nose_ear.npy', allow_pickle=True)
 
+
+        # Hyperparameters
+        self.learning_rate = 1e-2
+        self.MAX_BETA_UPDATE_DIM = 3
+
     def init_params(self, batch_size):
         
         rabit_params = {}
@@ -60,34 +65,32 @@ class RabitModel_eye(nn.Module):
 
         print("Using device:",device)
 
-        rabit_params["beta"] = torch.ones((1, 100)).to(device)*0.5
-        # rabit_params["beta"][0] = 5
-        # rabit_params["beta"][1] = 0
+        rabit_params["beta"] = torch.ones(100).to(device)*0.5
 
-        # rabit_params["beta"][self.cfg.TRAIN.MAX_BETA_UPDATE_DIM:] = 0
-        rabit_params["beta"].requires_grad = False
 
-        rabit_params["scale"] = torch.ones([1])
-        rabit_params["scale"].requires_grad = False
+        # rabit_params["beta"][self.MAX_BETA_UPDATE_DIM:] = 0
+        rabit_params["beta"].requires_grad = True
+
+        rabit_params["scale"] = 2*torch.ones([1])
+        rabit_params["scale"].requires_grad = True
 
         rabit_params["offset"] = torch.zeros((24,3))
         rabit_params["offset"].requires_grad = False
 
         print('trans shape ---', rabit_params['trans'].shape)
 
-        self.learning_rate = 1e-2
 
         for k in rabit_params: 
             rabit_params[k] = nn.Parameter(rabit_params[k].to(device),requires_grad=rabit_params[k].requires_grad)
             self.register_parameter(k,rabit_params[k])
         self.rabit_params = rabit_params
 
-        self.rabit_params['beta'] = self.rabit_params['beta'].repeat(batch_size,1)
 
-        self.optimizer = optim.Adam([{'params': self.rabit_params["scale"], 'lr': self.learning_rate},
+
+        self.optimizer = optim.Adam([{'params': self.rabit_params["scale"], 'lr': 10*self.learning_rate},
                         {'params': self.rabit_params["beta"], 'lr': self.learning_rate},
-                        {'params': self.rabit_params["theta"], 'lr': self.learning_rate},{'params': self.rabit_params["trans"], 
-                                                                                                         'lr': self.learning_rate},
+                        {'params': self.rabit_params["theta"], 'lr': self.learning_rate},
+                        {'params': self.rabit_params["trans"],'lr': self.learning_rate},
                         {'params': self.rabit_params["offset"], 'lr': self.learning_rate}])
                          
 
@@ -95,15 +98,18 @@ class RabitModel_eye(nn.Module):
         # NOTE: forward infer
 
         pose = pose.reshape(pose.shape[0], -1, 3)
-        pose = pose[:, self.reorder_index, :]
+        # pose = pose[:, self.reorder_index, :]
         trans = trans.unsqueeze(1)  # [1, 1, 3]
 
         if self.beta_norm:
             # print("minus_mat: ", self.minus_mat.shape, "beta.shape: ", beta.shape, "range_mat:", self.range_mat.shape)
             beta = beta * self.range_mat + self.minus_mat
 
+        beta = beta.reshape((1,-1)).repeat(pose.shape[0],1) # Duplicate beta for each timestep
+
+
         if self.theta_norm:
-            pose = (pose - 0.5) * 3.1415926
+            pose = (pose - 0.5) * np.pi
         eye = None      # param of eye is auto
 
         if eye is not None:
@@ -184,7 +190,13 @@ class RabitModel_eye(nn.Module):
             eye_mesh = om.PolyMesh(points=eye_points, face_vertex_indices=faces)
             eyes_list[i] = eye_mesh
 
+         
         posed_vertices = torch.matmul(T, rest_shape_h).reshape(B, -1, 4)[:, :, :3]
+        
+        # Scale vertices
+        posed_vertices_center = posed_vertices.mean(dim=1,keepdims=True)
+        posed_vertices = self.rabit_params["scale"]*(posed_vertices - posed_vertices_center) + posed_vertices_center
+        
         # print('shape of posed_vertices -- ', posed_vertices.shape)
         # print('shape of trans ---', trans.shape)
         posed_vertices = posed_vertices + trans
@@ -321,7 +333,7 @@ class RabitModel_eye(nn.Module):
         return
 
 
-def load_SMPL_data(filepath):
+def load_VIBE_data(filepath):
     # Inspect the output file content
     # joints3d : ground truth data
     output = joblib.load(filepath)
@@ -340,6 +352,14 @@ def load_SMPL_model():
     print('SMPL keys ---', smpl_model.keys())
 
     return smpl_model
+
+def get_local_joints(data,model): 
+    # Get 24x3 SMPl joints using mean of vertices
+    # Refer: https://github.com/mkocabas/VIBE/issues/18
+    verts = data['verts']
+    J_regressor = model['J_regressor']
+    local_joints = np.einsum('jv,tvd->tjd',J_regressor.toarray(),verts)
+    return local_joints
 
 
 RaBit_to_SMPL_joint_correspondences = [
@@ -367,26 +387,28 @@ RaBit_to_SMPL_joint_correspondences = [
  [[23, 11], 23]
 ]
 
-
 def train(args):
 
     filepath =  args.file
 
     SMPL_model = load_SMPL_model()
-    SMPL_data = load_SMPL_data(filepath)
+    SMPL_data = load_VIBE_data(filepath)
+
+    
+    SMPL_data['verts'] = np.tile(SMPL_model['v_template'].reshape((1,-1,3)) , (SMPL_data['verts'].shape[0],1,1) )
 
     if args.debug: 
         SMPL_data['joints3d'] = SMPL_data['joints3d'][:10]
         SMPL_data['verts'] = SMPL_data['verts'][:10]
 
-    joints3d = torch.from_numpy(SMPL_data['joints3d']).to(torch.float32)
-    joints3d = joints3d.to(device)
-    # load some info
-    mesh = om.read_polymesh('./rabit_data/shape/mean.obj')
-    faces = mesh.face_vertex_indices()
+    SMPL_data['smpl_joints'] = get_local_joints(SMPL_data,SMPL_model) # Use SMPL J-regressor to get smpl joints (root retative)    
+    SMPL_model['parent_array'] = SMPL_model['kintree_table'][0]
+    SMPL_model['parent_array'][0] = 0
 
-    rabit = RabitModel_eye(beta_norm=True, theta_norm=True)
+    joints3d = torch.from_numpy(SMPL_data['smpl_joints']).to(torch.float32)
+    joints3d = joints3d.to(device)
     
+    # load some info    
     rabit = RabitModel_eye(beta_norm=True, theta_norm=False)
     rabit.init_params(joints3d.shape[0])
 
@@ -396,7 +418,7 @@ def train(args):
     for coresp, index in RaBit_to_SMPL_joint_correspondences:
         rabit_joints.append(coresp[0])
         SMPL_joints.append(coresp[1])
-
+    corresp = np.array([SMPL_joints,rabit_joints])    
 
     rabit_joints = np.array(rabit_joints).astype(int)
     SMPL_joints = np.array(SMPL_joints).astype(int)
@@ -408,8 +430,12 @@ def train(args):
     # initial coordinates
     vis = Visualizer()
     body_mesh_points, kps, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
-    body_mesh_points = body_mesh_points.detach().cpu().numpy().reshape(-1, 3)
-    # vis.render_rabit(rabit, SMPL_data, SMPL_model, video_dir='demo')
+    
+    rabit_data = {'verts': body_mesh_points.detach().cpu().numpy(), 
+                  'joints3d': kps.detach().cpu().numpy(),
+                  'parent': rabit.parent,
+                   'faces': rabit.faces }
+    vis.render_rabit(rabit_data, SMPL_data, SMPL_model, corresp = corresp, video_dir=None)
     # print('Shape of Theta---- ', rabit.rabit_params['theta'].shape)
     
     # defining the test data
@@ -423,21 +449,36 @@ def train(args):
 
         rabit.optimizer.zero_grad() # setting gradients to 0
         l2_loss.backward()
+
+        # Update which beta parameters will be updated
+        rabit.rabit_params['beta'].grad[rabit.MAX_BETA_UPDATE_DIM:] = 0 
+
+
         rabit.optimizer.step() # updating the pose and shape params
 
 
-        # print('Theta -- after the L2 Loss---', rabit.rabit_params['theta'].grad)
-        # print('Trans --  after L2 Loss -- ', rabit.rabit_params['trans'])
+        # print('Theta -- after the L2 Loss---', rabit.rabit_params['theta'])
+        print('Trans:', rabit.rabit_params['trans'])
+        print('Scale:', rabit.rabit_params['scale'])
+        print('Beta:', rabit.rabit_params['beta'][:rabit.MAX_BETA_UPDATE_DIM])
 
         print('-----------Running for ', steps, '-------------') 
         # print('Pose Params of Rabit ----- ', rabit.rabit_params['theta'])
-        print('Shape of the root joint: ----- ', rabit.rabit_params['theta'][:, 6:9])
+        # print('Shape of the root joint: ----- ', rabit.rabit_params['theta'][:, 6:9])
 
+
+        # break 
     # print('Joint3D shape', joints3d.shape)
     # print('kps shape', kps.shape)
+ 
+    body_mesh_points, kps, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
+    rabit_data = {'verts': body_mesh_points.detach().cpu().numpy(), 
+                  'joints3d': kps.detach().cpu().numpy(),
+                  'parent': rabit.parent,
+                   'faces': rabit.faces }
 
-    
-    vis.render_rabit(rabit, SMPL_data, SMPL_model, video_dir='demo')
+    vis.render_rabit(rabit_data, SMPL_data, SMPL_model, corresp=corresp, video_dir=None)
+    vis.render_rabit(rabit_data, SMPL_data, SMPL_model, corresp=corresp, video_dir='demo')
 
     # mesh = om.PolyMesh(points=body_mesh_points, face_vertex_indices=faces)
     # om.write_mesh("output/rabit.obj", mesh)
@@ -454,19 +495,24 @@ if __name__ == '__main__':
                         prog='Retargetting',
                         description='Retargets from SMPL to RaBit',
                         epilog='')
-    parser.add_argument('--file',type=str,help="Path to .trc file that needs to be retargeted.")  # path to trc file
+    parser.add_argument('--file',type=str, default="../data/SMPL/vibe_output.pkl", help="Path to .trc file that needs to be retargeted.")  # path to trc file
     parser.add_argument('-f', '--force',action='store_true',help="forces a re-run on retargetting even if pkl file containg smpl data is already present.")  # on/off flag
     parser.add_argument('--render', action='store_true', help="Render a video and save it it in RENDER_DIR. Can also be set in the utils.py")  # on/off flag
-    parser.add_argument('--debug', action='store_true', help="Debug and run on less number of frames")
-    parser.add_argument('--gpu', action='store_true', help="Whether to use CUDA or CPU")
+    parser.add_argument('--debug', dest='debug', action='store_true', default=True,  help="Debug and run on less number of frames")
+    parser.add_argument('--no-debug', dest='debug', action='store_false', help="Debug and run on less number of frames")
+    parser.add_argument('--gpu', dest='gpu', action='store_true', default=True,help="Whether to use CUDA or CPU")
+    parser.add_argument('--no-gpu', dest='gpu', action='store_false',help="Whether to use CUDA or CPU")
 
 
     cmd_line_args = parser.parse_args()
 
     print("GPU:",cmd_line_args.gpu)
+    print("Debug:",cmd_line_args.debug)
 
     if cmd_line_args.gpu: 
         device = 'cuda' 
+
+
 
     train(cmd_line_args)
     
