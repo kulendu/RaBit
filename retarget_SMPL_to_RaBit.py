@@ -50,178 +50,8 @@ class RabitModel_eye(nn.Module):
 
         # Hyperparameters
         self.learning_rate = 1e-2
-        self.MAX_BETA_UPDATE_DIM = 3
+        self.MAX_BETA_UPDATE_DIM = 10 
 
-    def init_params(self, batch_size):
-        
-        rabit_params = {}
-        rabit_params["theta"] = torch.zeros(batch_size, 72)
-
-        # rabit_params["theta"][:,:3] = torch.from_numpy(np.tile(ROOT_INIT_ROTVEC[None,:],(batch_size,1))) # ROTATION VECTOR to initialize root joint orientation 
-        rabit_params["theta"].requires_grad = True
-
-        rabit_params["trans"] = torch.zeros(batch_size, 3)
-        rabit_params["trans"].requires_grad = True
-
-        print("Using device:",device)
-
-        rabit_params["beta"] = torch.ones(100).to(device)*0.5
-
-
-        # rabit_params["beta"][self.MAX_BETA_UPDATE_DIM:] = 0
-        rabit_params["beta"].requires_grad = True
-
-        rabit_params["scale"] = 2*torch.ones([1])
-        rabit_params["scale"].requires_grad = True
-
-        rabit_params["offset"] = torch.zeros((24,3))
-        rabit_params["offset"].requires_grad = False
-
-        print('trans shape ---', rabit_params['trans'].shape)
-
-
-        for k in rabit_params: 
-            rabit_params[k] = nn.Parameter(rabit_params[k].to(device),requires_grad=rabit_params[k].requires_grad)
-            self.register_parameter(k,rabit_params[k])
-        self.rabit_params = rabit_params
-
-
-
-        self.optimizer = optim.Adam([{'params': self.rabit_params["scale"], 'lr': 10*self.learning_rate},
-                        {'params': self.rabit_params["beta"], 'lr': self.learning_rate},
-                        {'params': self.rabit_params["theta"], 'lr': self.learning_rate},
-                        {'params': self.rabit_params["trans"],'lr': self.learning_rate},
-                        {'params': self.rabit_params["offset"], 'lr': self.learning_rate}])
-                         
-
-    def forward(self, beta, pose, trans):
-        # NOTE: forward infer
-
-        pose = pose.reshape(pose.shape[0], -1, 3)
-        # pose = pose[:, self.reorder_index, :]
-        trans = trans.unsqueeze(1)  # [1, 1, 3]
-
-        if self.beta_norm:
-            # print("minus_mat: ", self.minus_mat.shape, "beta.shape: ", beta.shape, "range_mat:", self.range_mat.shape)
-            beta = beta * self.range_mat + self.minus_mat
-
-        beta = beta.reshape((1,-1)).repeat(pose.shape[0],1) # Duplicate beta for each timestep
-
-
-        if self.theta_norm:
-            pose = (pose - 0.5) * np.pi
-        eye = None      # param of eye is auto
-
-        if eye is not None:
-            eye = eye.detach().cpu().numpy()
-        return self.update(beta, pose, trans, eye)
-
-    def update(self, beta, pose, trans, eye):
-        """
-        Called automatically when parameters are updated.
-
-        """
-        t_posed = self.update_Tpose_whole(beta)
-
-        # eye reconstruct
-        rC, rR = 1.45369, 1.75312
-        eyes_list = []
-        for i in range(len(t_posed)):
-            if eye is not None:
-                eyes_mesh = self.eye_recon.reconstruct(t_posed[i].reshape(-1, 3), eye[i, 0], eye[i, 1])
-            else:
-                eyes_mesh = self.eye_recon.reconstruct(t_posed[i].reshape(-1, 3), rC, rR)
-            eyes_list.append(eyes_mesh)
-
-        B = beta.shape[0]
-        weights = self.weights.to(device)
-
-        J = []
-        for i in range(len(self.index2cluster)):
-            key = self.index2cluster[i]
-            if key == 'RootNode':
-                J.append(torch.zeros(B, 3).to(device))
-                continue
-            index_val = t_posed[:, self.joint2index[key], :]
-            maxval = index_val.max(dim=1)[0]
-            minval = index_val.min(dim=1)[0]
-
-            J.append((maxval + minval) / 2)
-        J = torch.stack(J, dim=1)
-        # rotation matrix for each joint
-        R = self.rodrigues(pose)
-
-        # world transformation of each joint
-        G = []
-        G.append(self.with_zeros(torch.cat([R[:, 0], J[:, 0, :].reshape(B, 3, 1)], dim=2)))
-        for i in range(1, self.ktree_table.shape[0]):
-            dJ = J[:, i, :] - J[:, int(self.parent[i]), :]
-            G_loc = self.with_zeros(torch.cat([R[:, i], dJ.reshape(B, 3, 1)], dim=2))
-            Gx = torch.matmul(G[int(self.parent[i])], G_loc)
-            G.append(Gx)
-
-        G = torch.stack(G, dim=1)
-
-        # remove the transformation due to the rest pose
-        zeros24 = torch.zeros((B, 24, 1)).to(device)
-        G1 = G - self.pack(
-            torch.matmul(
-                G,
-                torch.cat([J, zeros24], dim=2).reshape([B, 24, 4, 1])
-            )
-        )
-
-        # transformation of each vertex
-        G_r = G1.reshape(B, 24, -1)
-        T = torch.matmul(weights, G_r).reshape(B, -1, 4, 4)
-        ones_vposed = torch.ones((B, t_posed.shape[1], 1)).to(device)
-        rest_shape_h = torch.cat([t_posed, ones_vposed], dim=2).reshape(B, -1, 4, 1)
-
-        tempmesh = eyes_list[0]
-        faces = tempmesh.face_vertex_indices()
-        for i in range(len(T)):
-            eye_mesh = eyes_list[i]
-            eye_points = eye_mesh.points()
-            Ti = T[i, self.eye_recon.eyeidx]
-            Ti = Ti.mean(0).detach().cpu().numpy()  # 4*4
-            temp = np.ones(len(eye_points))
-            eye_points = np.c_[eye_points, temp]
-            eye_points = eye_points.dot(Ti.T)[:, :3]
-            eye_mesh = om.PolyMesh(points=eye_points, face_vertex_indices=faces)
-            eyes_list[i] = eye_mesh
-
-         
-        posed_vertices = torch.matmul(T, rest_shape_h).reshape(B, -1, 4)[:, :, :3]
-        
-        # Scale vertices
-        posed_vertices_center = posed_vertices.mean(dim=1,keepdims=True)
-        posed_vertices = self.rabit_params["scale"]*(posed_vertices - posed_vertices_center) + posed_vertices_center
-        
-        # print('shape of posed_vertices -- ', posed_vertices.shape)
-        # print('shape of trans ---', trans.shape)
-        posed_vertices = posed_vertices + trans
-
-
-        skeleton = []
-        for i in range(len(self.index2cluster)):  # rotate keypoints
-            key = self.index2cluster[i]
-            if key == 'RootNode':
-                skeleton.append(torch.zeros(B, 3).to(device))
-                continue
-            index_val = posed_vertices[:, self.joint2index[key], :]
-            maxval = index_val.max(dim=1)[0]
-            minval = index_val.min(dim=1)[0]
-            skeleton.append((maxval + minval) / 2)
-        for i in range(len(self.additional_7kp_index)):  # toe nose tumb ear
-            index_val = posed_vertices[:, self.additional_7kp_index[i], :]
-            maxval = index_val.max(dim=1)[0]
-            minval = index_val.min(dim=1)[0]
-            skeleton.append((maxval + minval) / 2)
-
-        skeleton = torch.stack(skeleton, dim=1)
-        #skeleton = joint locations
-        #posed_vertices = 3D coord of mesh vertices (SMPL mesh)
-        return posed_vertices, skeleton, eyes_list
 
     def prepare(self):
         self.dataroot = "./rabit_data/shape/"
@@ -270,6 +100,186 @@ class RabitModel_eye(nn.Module):
         self.v_template = torch.from_numpy(self.v_template).to(torch.float32)
         self.weights = torch.from_numpy(self.weightMatrix).to(torch.float32)
 
+
+    def init_params(self, batch_size):
+        
+        rabit_params = {}
+        rabit_params["theta"] = torch.zeros(batch_size, 72)
+        # rabit_params["theta"][:,:3] = torch.from_numpy(np.tile(ROOT_INIT_ROTVEC[None,:],(batch_size,1))) # ROTATION VECTOR to initialize root joint orientation 
+        rabit_params["theta"].requires_grad = False
+
+        rabit_params["trans"] = torch.zeros(batch_size, 3)
+        rabit_params["trans"].requires_grad = True
+
+        print("Using device:",device,self.shapedirs.shape)
+
+        rabit_params["beta"] = torch.ones(100).to(device)*0.5
+
+
+        # rabit_params["beta"][self.MAX_BETA_UPDATE_DIM:] = 0
+        rabit_params["beta"].requires_grad = True
+
+        rabit_params["scale"] = 2*torch.ones([1])
+        # rabit_params["scale"] = torch.ones([1])
+        rabit_params["scale"].requires_grad = True
+
+        rabit_params["offset"] = torch.zeros((24,3))
+        rabit_params["offset"].requires_grad = False
+
+
+
+        for k in rabit_params: 
+            rabit_params[k] = nn.Parameter(rabit_params[k].to(device),requires_grad=rabit_params[k].requires_grad)
+            self.register_parameter(k,rabit_params[k])
+        self.rabit_params = rabit_params
+
+
+
+        self.optimizer = optim.Adam([{'params': self.rabit_params["scale"], 'lr': self.learning_rate},
+                        {'params': self.rabit_params["beta"], 'lr': self.learning_rate},
+                        {'params': self.rabit_params["theta"], 'lr': self.learning_rate},
+                        {'params': self.rabit_params["trans"],'lr': self.learning_rate},
+                        {'params': self.rabit_params["offset"], 'lr': self.learning_rate}])
+                         
+
+    def forward(self, beta, pose, trans):
+        # NOTE: forward infer
+
+        pose = pose.reshape(pose.shape[0], -1, 3)
+        # pose = pose[:, self.reorder_index, :]
+        trans = trans.unsqueeze(1)  # [1, 1, 3]
+
+        if self.beta_norm:
+            # print("minus_mat: ", self.minus_mat.shape, "beta.shape: ", beta.shape, "range_mat:", self.range_mat.shape)
+            beta = beta * self.range_mat + self.minus_mat
+
+        beta = beta.reshape((1,-1)).repeat(pose.shape[0],1) # Duplicate beta for each timestep
+
+
+        if self.theta_norm:
+            pose = (pose - 0.5) * np.pi
+        eye = None      # param of eye is auto
+
+        if eye is not None:
+            eye = eye.detach().cpu().numpy()
+        return self.update(beta, pose, trans, eye)
+
+    def update(self, beta, pose, trans, eye):
+        """
+        Called automatically when parameters are updated.
+
+        """
+        t_posed = self.update_Tpose_whole(beta)
+
+        eyes_list = self.update_Tpose_eyes(eye,t_posed) # Get the location of eyes in the T-pose
+
+        B = beta.shape[0] # Batch size
+        weights = self.weights.to(device)
+
+        J = []
+        for i in range(len(self.index2cluster)):
+            key = self.index2cluster[i]
+            if key == 'RootNode':
+                J.append(torch.zeros(B, 3).to(device))
+                continue
+            index_val = t_posed[:, self.joint2index[key], :]
+            maxval = index_val.max(dim=1)[0]
+            minval = index_val.min(dim=1)[0]
+
+            J.append((maxval + minval) / 2)
+        J = torch.stack(J, dim=1)
+        
+        # rotation matrix for each joint
+        R = self.rodrigues(pose)
+
+        # world transformation of each joint
+        G = []
+        G.append(self.with_zeros(torch.cat([R[:, 0], J[:, 0, :].reshape(B, 3, 1)], dim=2)))
+        for i in range(1, self.ktree_table.shape[0]):
+            dJ = J[:, i, :] - J[:, int(self.parent[i]), :] 
+            # dJ = J[:, i, :] - J[:, int(self.parent[i]), :] 
+            G_loc = self.with_zeros(torch.cat([R[:, i], dJ.reshape(B, 3, 1)], dim=2))
+            Gx = torch.matmul(G[int(self.parent[i])], G_loc)
+            G.append(Gx)
+
+        G = torch.stack(G, dim=1)
+
+        # remove the transformation due to the rest pose (not sure why this is being done but otherwise gives a degenrate result)
+        zeros24 = torch.zeros((B, 24, 1)).to(device)
+        G1 = G - self.pack(
+            torch.matmul(
+                G,
+                torch.cat([J, zeros24], dim=2).reshape([B, 24, 4, 1])
+            )
+        )
+
+        print(f"G:{G.shape}, G1:{G1.shape} Weights:{weights.shape}")    
+        # transformation of each vertex
+        G_r = G1.reshape(B, 24, -1)
+        T = torch.matmul(weights, G_r).reshape(B, -1, 4, 4) # BxVx16 -> BxVx4x4
+        ones_vposed = torch.ones((B, t_posed.shape[1], 1)).to(device)
+        rest_shape_h = torch.cat([t_posed, ones_vposed], dim=2).reshape(B, -1, 4, 1)
+
+        tempmesh = eyes_list[0]
+        faces = tempmesh.face_vertex_indices()
+        for i in range(len(T)):
+            eye_mesh = eyes_list[i]
+            eye_points = eye_mesh.points()
+            Ti = T[i, self.eye_recon.eyeidx]
+            Ti = Ti.mean(0).detach().cpu().numpy()  # 4*4
+            temp = np.ones(len(eye_points))
+            eye_points = np.c_[eye_points, temp]
+            eye_points = eye_points.dot(Ti.T)[:, :3]
+            eye_mesh = om.PolyMesh(points=eye_points, face_vertex_indices=faces)
+            eyes_list[i] = eye_mesh
+
+         
+        posed_vertices = torch.matmul(T, rest_shape_h).reshape(B, -1, 4)[:, :, :3]
+        
+        # Scale vertices
+        posed_vertices_center = posed_vertices.mean(dim=1,keepdims=True)
+        posed_vertices = self.rabit_params["scale"]*(posed_vertices - posed_vertices_center) + posed_vertices_center
+        
+        # print('shape of posed_vertices -- ', posed_vertices.shape)
+        # print('shape of trans ---', trans.shape)
+        posed_vertices = posed_vertices + trans
+
+
+        skeleton = []
+        
+        # Not sure why RaBit uses this ? Basically they take the
+        # for i in range(len(self.index2cluster)):  # rotate keypoints
+        #     key = self.index2cluster[i]
+        #     if key == 'RootNode':
+        #         skeleton.append(torch.zeros(B, 3).to(device))
+        #         continue
+        #     index_val = posed_vertices[:, self.joint2index[key], :]
+        #     maxval = index_val.max(dim=1)[0]
+        #     minval = index_val.min(dim=1)[0]
+        #     skeleton.append((maxval + minval) / 2)
+
+        skeleton = self.rabit_params['scale']*(G[:,:,:3,3] - posed_vertices_center) + posed_vertices_center + trans
+
+        additional_keypoints = []
+        for i in range(len(self.additional_7kp_index)):  # toe nose tumb ear
+            index_val = posed_vertices[:, self.additional_7kp_index[i], :]
+            maxval = index_val.max(dim=1)[0]
+            minval = index_val.min(dim=1)[0]
+            additional_keypoints.append((maxval + minval) / 2)
+        additional_keypoints = torch.stack(additional_keypoints,dim=1)
+
+        skeleton = torch.cat([skeleton,additional_keypoints], dim=1)
+
+        # For putting additional offset loss similar to soft-margin svm 
+        skeleton_offset = J + self.rabit_params['offset'] # Adding offset
+        skeleton_offset_homo = torch.cat([skeleton_offset,torch.ones((B,24,1)).to(device)],2) # Converting to homogenous co-ordinates 
+        skeleton_offset_transformed = (G1*skeleton_offset_homo.unsqueeze(2)).sum(3) # Use the relative transformation matrix to deform each joint   
+        skeleton_offset_transformed = skeleton_offset_transformed[:,:,:3] # Back to 3D co-ordinates
+        skeleton_offset_scaled = self.rabit_params['scale']*(skeleton_offset_transformed - posed_vertices_center) + posed_vertices_center + trans 
+
+        return posed_vertices, skeleton,skeleton_offset_scaled, eyes_list
+
+
     def update_Tpose_whole(self, beta):
         B = beta.shape[0]
         shapedir = self.shapedirs.to(device)
@@ -277,6 +287,19 @@ class RabitModel_eye(nn.Module):
         v_shaped = torch.matmul(beta, shapedir.T) + v_template.reshape(1, -1)
         v_posed = v_shaped.reshape(B, -1, 3)
         return v_posed
+
+    def update_Tpose_eyes(self,eye,t_posed): 
+        # eye reconstruct
+        rC, rR = 1.45369, 1.75312
+        eyes_list = []
+        for i in range(len(t_posed)):
+            if eye is not None:
+                eyes_mesh = self.eye_recon.reconstruct(t_posed[i].reshape(-1, 3), eye[i, 0], eye[i, 1])
+            else:
+                eyes_mesh = self.eye_recon.reconstruct(t_posed[i].reshape(-1, 3), rC, rR)
+            eyes_list.append(eyes_mesh)
+        
+        return eyes_list
 
     def rodrigues(self, r):
         # r shape B (24, 3)
@@ -363,28 +386,27 @@ def get_local_joints(data,model):
 
 
 RaBit_to_SMPL_joint_correspondences = [
- [[0, 12], 0],
- [[1, 0], 1],
- [[2, 3], 2],
- [[3, 9], 3],
- [[4, 16], 4],
- [[5, 18], 5],
- [[6, 18], 6],
- [[7, 20], 7],
- [[8, 22], 8],
- [[10, 15], 10],
- [[11, 1], 11],
- [[12, 4], 12],
- [[13, 2], 13],
- [[14, 5],  14],
- [[15, 7], 15],
- [[16, 10], 16],
- [[17, 17], 17],
- [[19, 19], 19],
- [[20, 21], 20],
- [[21, 23], 21],
- [[22, 8], 22],
- [[23, 11], 23]
+ [0, 12],
+ [1, 0],
+ [2, 3],
+ [3, 9],
+ [4, 16],
+ [6, 18],
+ [7, 20],
+ [8, 22],
+ [10, 15],
+ [11, 1],
+ [12, 4],
+ [13, 2],
+ [14, 5,],
+ [15, 7],
+ [16, 10],
+ [17, 17],
+ [19, 19],
+ [20, 21],
+ [21, 23],
+ [22, 8],
+ [23, 11]
 ]
 
 def train(args):
@@ -394,17 +416,19 @@ def train(args):
     SMPL_model = load_SMPL_model()
     SMPL_data = load_VIBE_data(filepath)
 
-    
+
     SMPL_data['verts'] = np.tile(SMPL_model['v_template'].reshape((1,-1,3)) , (SMPL_data['verts'].shape[0],1,1) )
 
     if args.debug: 
-        SMPL_data['joints3d'] = SMPL_data['joints3d'][:10]
-        SMPL_data['verts'] = SMPL_data['verts'][:10]
+        SMPL_data['joints3d'] = SMPL_data['joints3d'][:2]
+        SMPL_data['verts'] = SMPL_data['verts'][:2]
+        SMPL_data['pose'] = SMPL_data['pose'][:2]
 
     SMPL_data['smpl_joints'] = get_local_joints(SMPL_data,SMPL_model) # Use SMPL J-regressor to get smpl joints (root retative)    
     SMPL_model['parent_array'] = SMPL_model['kintree_table'][0]
     SMPL_model['parent_array'][0] = 0
 
+    # Target joints
     joints3d = torch.from_numpy(SMPL_data['smpl_joints']).to(torch.float32)
     joints3d = joints3d.to(device)
     
@@ -412,10 +436,17 @@ def train(args):
     rabit = RabitModel_eye(beta_norm=True, theta_norm=False)
     rabit.init_params(joints3d.shape[0])
 
+    # Init root pose
+    # with torch.no_grad():
+    #     rabit.rabit_params['theta'][:,:3] = torch.from_numpy(SMPL_data['pose'][:,:3]) 
+
+
+
     rabit_joints = []
     SMPL_joints = []
     
-    for coresp, index in RaBit_to_SMPL_joint_correspondences:
+    for coresp in RaBit_to_SMPL_joint_correspondences:
+        print(coresp)
         rabit_joints.append(coresp[0])
         SMPL_joints.append(coresp[1])
     corresp = np.array([SMPL_joints,rabit_joints])    
@@ -423,57 +454,77 @@ def train(args):
     rabit_joints = np.array(rabit_joints).astype(int)
     SMPL_joints = np.array(SMPL_joints).astype(int)
 
-    # print('RaBit joints --', rabit_joints)
-    # print('SMPL joints -- ', SMPL_joints)
-    # print('SMPL vertices shape --', SMPL_data['verts'].shape)
-
     # initial coordinates
     vis = Visualizer()
-    body_mesh_points, kps, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
+    body_mesh_points, kps,kps_offset, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
     
     rabit_data = {'verts': body_mesh_points.detach().cpu().numpy(), 
                   'joints3d': kps.detach().cpu().numpy(),
+                  'joints3d_offset': kps_offset.detach().cpu().numpy(),
                   'parent': rabit.parent,
                    'faces': rabit.faces }
     vis.render_rabit(rabit_data, SMPL_data, SMPL_model, corresp = corresp, video_dir=None)
     # print('Shape of Theta---- ', rabit.rabit_params['theta'].shape)
     
     # defining the test data
-    for steps in range(50):
-        body_mesh_points, kps, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
-        l2_loss = kps[:, rabit_joints, :] - joints3d[:, SMPL_joints, :] # this is a vector
+    for step in range(100):
+        print('-----------Running for ', step, '-------------') 
+        body_mesh_points, kps,kps_offset, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
+        l2_loss = kps_offset[:, rabit_joints, :] - joints3d[:, SMPL_joints, :] # this is a vector
         l2_loss = (l2_loss**2).mean() # converting to scalar
-        print('L2 Loss --- ', l2_loss)
+        
+        loss_offset_min = rabit.rabit_params['offset'].norm()
+
+        loss_beta_norm = (rabit.rabit_params['beta'] - 0.5).norm() # Force Beta values to be near their mean 
+
         # print('KPS Shape: ', kps[:, rabit_joints, :].shape)
         # print('Joints3D shape: ', joints3d[:, SMPL_joints, :].shape)
 
         rabit.optimizer.zero_grad() # setting gradients to 0
-        l2_loss.backward()
+        
+        # loss = l2_loss + 0.01*loss_beta_norm + 1*loss_offset_min
+        # loss = l2_loss +  0.005*loss_offset_min
+        loss = l2_loss
+        # loss = l2_loss + 1*loss_offset_min
+
+
+        loss.backward()
+        print('Loss --- Total:',loss.data.item(), 'L2:', l2_loss.data.item(), ' Offset:', loss_offset_min.data.item(), 'Beta:', loss_beta_norm.data.item())
 
         # Update which beta parameters will be updated
-        rabit.rabit_params['beta'].grad[rabit.MAX_BETA_UPDATE_DIM:] = 0 
+        if rabit.rabit_params['beta'].grad is not None:
+            rabit.rabit_params['beta'].grad[rabit.MAX_BETA_UPDATE_DIM:] = 0 
 
 
         rabit.optimizer.step() # updating the pose and shape params
 
 
         # print('Theta -- after the L2 Loss---', rabit.rabit_params['theta'])
-        print('Trans:', rabit.rabit_params['trans'])
+        print('Offset:', rabit.rabit_params['offset'][0])
+        print('Trans:', rabit.rabit_params['trans'][0])
+        print(f'Source Root Location:',kps_offset[0,0])
+        print('Target Root Trans:', joints3d[0,12])
         print('Scale:', rabit.rabit_params['scale'])
         print('Beta:', rabit.rabit_params['beta'][:rabit.MAX_BETA_UPDATE_DIM])
 
-        print('-----------Running for ', steps, '-------------') 
-        # print('Pose Params of Rabit ----- ', rabit.rabit_params['theta'])
-        # print('Shape of the root joint: ----- ', rabit.rabit_params['theta'][:, 6:9])
+
+        rabit_data = {'verts': body_mesh_points.detach().cpu().numpy(), 
+                  'joints3d': kps.detach().cpu().numpy(),
+                  'joints3d_offset': kps_offset.detach().cpu().numpy(),
+                  'parent': rabit.parent,
+                   'faces': rabit.faces }
+        vis.render_shape_iteration(rabit_data, SMPL_data, SMPL_model, corresp = corresp, image_name=f"shape_iteration-{step}",video_dir="demo")
+    
+    vis.render_shape_iteration_video(image_name=f"shape_iteration",video_dir="demo")
 
 
-        # break 
-    # print('Joint3D shape', joints3d.shape)
-    # print('kps shape', kps.shape)
+        # break     
  
-    body_mesh_points, kps, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
+    body_mesh_points, kps,kps_offset, eyes = rabit(rabit.rabit_params['beta'], rabit.rabit_params['theta'], rabit.rabit_params['trans'])
+    
     rabit_data = {'verts': body_mesh_points.detach().cpu().numpy(), 
                   'joints3d': kps.detach().cpu().numpy(),
+                  'joints3d_offset': kps_offset.detach().cpu().numpy(),
                   'parent': rabit.parent,
                    'faces': rabit.faces }
 
