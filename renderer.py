@@ -44,7 +44,7 @@ class Visualizer:
 		bbox_smpl = SMPL_data['verts'].max(axis=(0,1))  - SMPL_data['verts'].min(axis=(0,1))
 		bbox_rabit = rabit_data['verts'].max(axis=(0,1))  - rabit_data['verts'].min(axis=(0,1))
 		# bbox_rabit = bbox_rabit.detach().cpu().numpy()
-		print('Shape of BBox target -', bbox_rabit)
+		# print('Shape of BBox target -', bbox_rabit)
 
 		bbox = bbox_smpl if np.linalg.norm(bbox_smpl) > np.linalg.norm(bbox_rabit) else bbox_rabit
 		object_position = SMPL_data['smpl_joints'][0,0]
@@ -150,7 +150,7 @@ class Visualizer:
 		bbox_smpl = SMPL_data['verts'].max(axis=(0,1))  - SMPL_data['verts'].min(axis=(0,1))
 		bbox_rabit = rabit_data['verts'].max(axis=(0,1))  - rabit_data['verts'].min(axis=(0,1))
 		# bbox_rabit = bbox_rabit.detach().cpu().numpy()
-		print('Shape of BBox target -', bbox_rabit)
+		# print('Shape of BBox target -', bbox_rabit)
 
 		bbox = bbox_smpl if np.linalg.norm(bbox_smpl) > np.linalg.norm(bbox_rabit) else bbox_rabit
 		object_position = SMPL_data['smpl_joints'][0,0]
@@ -198,7 +198,7 @@ class Visualizer:
 
 		# Plot correspondence 
 		if corresp is not None: 
-			print("Corresp:",corresp,corresp.shape)
+			# print("Corresp:",corresp,corresp.shape)
 			corresp_nodes = np.concatenate([ SMPL_data['smpl_joints'][0,corresp[0,:]], rabit_data['joints3d_offset'][0,corresp[1,:]]  ], axis=0)
 			corresp_edges = np.array([  (i, i+corresp.shape[1])  for i in range(corresp.shape[1])])
 
