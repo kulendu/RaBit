@@ -18,18 +18,14 @@ import torch
 import torch.nn as nn
 import numpy as np
 import openmesh as om
-from eye_reconstructor import Eye_reconstructor
 
-from renderer import Visualizer
 
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-
-torch.backends.cudnn.enabled = True
-torch.backends.cudnn.benchmark = True
-
+'''
+TO-DO's:
+1. Include the command-line arguments for taking different AMASS files (argparser)
+2. Make a separate function for loading the pkl file and the seprate for loading the npz file
+3. Refactor the code
+'''
 
 import warnings
 # the UserWarning can be ignored
@@ -60,13 +56,15 @@ class Retargetter:
 
     def amass_visualizer():
 
-        amass_file = '/home/kulendu/SMPL-Manipulation/ACCAD/Male2MartialArtsExtended_c3d/Extended_1_stageii.npz'
+        # amass_file = '/home/kulendu/SMPL-Manipulation/ACCAD/Male2MartialArtsExtended_c3d/Extended_1_stageii.npz'
+        pose_file = './AMASS_pose.pkl'
         # amass_file = path_to_amass
 
         # Load the dataset
-        data = np.load(amass_file)
+        # data = np.load(amass_file)
+        data = joblib.load(pose_file)
 
-        print(data.files)
+        print(data.keys())
 
         frame_count = data['poses'].shape[0]
         # frame_index = 0
@@ -111,7 +109,7 @@ class Retargetter:
         for frame_index in range(frame_count):
             poses = data['poses'][frame_index]
             # betas = data['betas'][:10]
-            trans = data['trans'][frame_index]
+            trans = data['translations'][frame_index]
 
             print(f"Shape Coefficients: {len(betas)}")
             print(f"Poses: {len(poses)}")
@@ -162,9 +160,10 @@ class Retargetter:
             # continue
             # break
 
-        print("Successfully captured all the frames")
+    print("------------------- Successfully captured all the frames -------------------")
 
 
+# loading the rabit model
 def load_rabit():
     # mean file of the rabit model
     rabit_data = './rabit_data/shape/mean.obj'
@@ -175,7 +174,7 @@ def load_rabit():
     ps_mesh = ps.register_surface_mesh("RaBit", vertices, faces)
     ps.show()
 
-
+# function for fames compilation
 def compile_frames_to_video(output_dir, video_filename, fps=60):
     frame_files = sorted([os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.endswith('.png')])
     if not frame_files:
@@ -196,7 +195,12 @@ def compile_frames_to_video(output_dir, video_filename, fps=60):
 
     video.release()
 
+
+
+
+
+# calling the main function
 if __name__ == '__main__':
     Retargetter.amass_visualizer()
-    compile_frames_to_video(output_dir, 'output_video.mp4', fps=60)
+    compile_frames_to_video(output_dir, 'output_video_from_pkl.mp4', fps=60)
     # Retargetter.load_rabit()
