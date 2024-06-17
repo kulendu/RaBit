@@ -532,6 +532,7 @@ class SMPL2RabitRetargetter:
     # retargetter module
     def stage_2_pose_parameters_matching(self):
 
+
         rabit_joints = RaBit_to_SMPL_joint_correspondences[:,0].astype(int)
         SMPL_joints = RaBit_to_SMPL_joint_correspondences[:,1].astype(int)
 
@@ -542,7 +543,11 @@ class SMPL2RabitRetargetter:
         joints3d = torch.from_numpy(self.data['smpl_joints']).to(torch.float32)
         joints3d = joints3d.to(device)
 
-        for step in range(1000):
+        self.rabit.rabit_params["theta"].requires_grad = True
+        self.rabit.rabit_params["beta"].requires_grad = False
+        self.rabit.rabit_params["trans"].requires_grad = True
+
+        for step in range(200):
             # self.rabit_params["theta"].requires_grad = True
             # self.rabit_params["beta"].requires_grad = False
 
@@ -554,7 +559,7 @@ class SMPL2RabitRetargetter:
             
             loss_offset_min = self.rabit.rabit_params['offset'].norm() # Add offset between the joint positions of RaBit and SMPL. Not useful
             loss_theta_norm = (self.rabit.rabit_params['theta'] - 0.5).norm() # Force Beta values to be near their mean. Not useful 
-
+            loss_beta_norm = (self.rabit.rabit_params['beta'] - 0.5).norm()
 
             self.rabit.optimizer.zero_grad() # setting gradients to 0
             
@@ -564,7 +569,7 @@ class SMPL2RabitRetargetter:
 
 
             loss.backward()
-            print(f'Iteration: {step} Loss ---  Total:{loss.data.item()} L2:{l2_loss.data.item()} Offset: {loss_offset_min.data.item()} Theta:{loss_theta_norm.data.item()}')
+            print(f'Iteration: {step} Loss ---  Total:{loss.data.item()} L2:{l2_loss.data.item()} Offset: {loss_offset_min.data.item()} Theta:{loss_theta_norm.data.item()} Betas:{loss_theta_norm.data.item()}')
 
             # Update which beta parameters will be updated
             # if the gradients of the betas is not None, then set the gradients beyond a certain limit (MAX_BETA_UPDATE_DIM) to 0
@@ -583,12 +588,16 @@ class SMPL2RabitRetargetter:
                       'parent': self.rabit.parent,
                        'faces': self.rabit.faces }
             
-            self.rabit.rabit_params["theta"].requires_grad = True
-            self.rabit.rabit_params["beta"].requires_grad = False
+            
+
+            
         
             self.vis.render_shape_iteration(rabit_data, self.data, self.smpl, corresp = corresp, image_name=f"pose_iteration-{step}",video_dir="demo")
         
+
+
         self.vis.render_shape_iteration_video(image_name=f"pose_iteration",video_dir="demo")
+        self.visualize(video_dir=None)
         
         # Init root pose
         # with torch.no_grad():
@@ -599,7 +608,7 @@ class SMPL2RabitRetargetter:
 
 
     def retarget(self): 
-        # self.stage_1_shape_parameters_matching()
+        self.stage_1_shape_parameters_matching()
         self.stage_2_pose_parameters_matching()
 
     def visualize(self,video_dir=None):    
