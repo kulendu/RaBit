@@ -1,4 +1,6 @@
 import torch
+import trimesh
+import argparse
 import torch.nn as nn
 import numpy as np
 import openmesh as om
@@ -34,12 +36,14 @@ class RabitModel_eye(nn.Module):
         # NOTE: forward infer
 
         pose = pose.reshape(pose.shape[0], -1, 3)
+        # print(f"Shape of Pose: {pose.shape}")
         pose = pose[:, self.reorder_index, :]
         trans = trans.unsqueeze(1)  # [1, 1, 3]
 
         if self.beta_norm:
             print("minus_mat: ", self.minus_mat.shape, "beta.shape: ", beta.shape, "range_mat:", self.range_mat.shape)
             beta = beta * self.range_mat + self.minus_mat
+            print(f"Shape of the  beta: {beta.shape}")
 
         if self.theta_norm:
             pose = (pose - 0.5) * 3.1415926
@@ -54,7 +58,10 @@ class RabitModel_eye(nn.Module):
         Called automatically when parameters are updated.
 
         """
-        t_posed = self.update_Tpose_whole(beta)
+        # t_posed = self.update_Tpose_whole(beta)
+        t_posed_mesh = trimesh.load("./98/tpose/m.obj")
+        t_posed = torch.from_numpy(t_posed_mesh.vertices).unsqueeze(0).float().to(device)
+        print(f"Shape of t_posed: {t_posed.shape}")
 
         # eye reconstruct
         rC, rR = 1.45369, 1.75312
@@ -80,7 +87,9 @@ class RabitModel_eye(nn.Module):
             minval = index_val.min(dim=1)[0]
 
             J.append((maxval + minval) / 2)
+            # breakpoint()
         J = torch.stack(J, dim=1)
+        print(f"Shape of the Joint (J): {J.shape}")
         # rotation matrix for each joint
         R = self.rodrigues(pose)
 
@@ -145,12 +154,21 @@ class RabitModel_eye(nn.Module):
         skeleton = torch.stack(skeleton, dim=1)
         #skeleton = joint locations
         #posed_vertices = 3D coord of mesh vertices (SMPL mesh)
+        print(f"The shape of the skeleton is : {skeleton.shape}")
+        print(f"The type of the skeleton is : {type(skeleton)}")
+
+        # converting the torch tensor to numpy array
+        numpy_skeleton = skeleton.numpy()
+        # np.save("/home/kulendu/3DV 2025/Curated Dataset/new_skeleton_2.npy", numpy_skeleton)
+        # print("Saved the array")
+
         return posed_vertices, skeleton, eyes_list
 
     def prepare(self):
         self.dataroot = "./rabit_data/shape/"
         self.mean_file = [self.dataroot + "mean.obj"]
-        self.pca_weight = np.load(self.dataroot + "pcamat.npy", allow_pickle=True)[:100, :]
+        # self.mean_file = ["/home/kulendu/3DV 2025/Curated Dataset/Rabit_Data/9912/tpose/m.obj"]
+        self.pca_weight = np.load(self.dataroot + "pcamat.npy", allow_pickle=True)[:500, :]
         self.clusterdic = np.load(self.dataroot + 'clusterdic.npy', allow_pickle=True).item()
         self.maxmin = self.processMaxMin()  # [c,r]
 
@@ -199,7 +217,10 @@ class RabitModel_eye(nn.Module):
         shapedir = self.shapedirs.to(device)
         v_template = self.v_template.to(device)
         v_shaped = torch.matmul(beta, shapedir.T) + v_template.reshape(1, -1)
+        # v_shaped = v_shaped.double()
         v_posed = v_shaped.reshape(B, -1, 3)
+
+        print(f"Type of v_shaped: {type(v_shaped)}")
         return v_posed
 
     def rodrigues(self, r):
@@ -244,7 +265,7 @@ class RabitModel_eye(nn.Module):
     def processMaxMin(self):
         maxmin = np.load(self.dataroot + 'maxmin.npy', allow_pickle=True)
         maxmin = maxmin.T
-        maxmin = maxmin[:100, [1, 0]]
+        maxmin = maxmin[:500, [1, 0]]
         c = maxmin[:, 0:1]
         norm_maxmin = maxmin - c
         r = norm_maxmin[:, 1:]
@@ -259,16 +280,31 @@ class RabitModel_eye(nn.Module):
 
 if __name__ == '__main__':
     # load some info
-    mesh = om.read_polymesh('./rabit_data/shape/mean.obj')
+    # mesh = om.read_polymesh('/home/kulendu/3DV 2025/Curated Dataset/Rabit_Data/5/tpose/m.obj')
+    mesh = om.read_polymesh('./98/tpose/m.obj')
     faces = mesh.face_vertex_indices()
+
+    # getting the vertices of the mesh
+    vertices = []
+    for vert in (mesh.vertices()):
+        point = mesh.point(vert)
+        vertices.append(point)
+    print(f"Length of the vertices: {len(vertices)}")
 
     rabit = RabitModel_eye(beta_norm=True, theta_norm=True)
 
     # random
-    beta = torch.ones((1, 100)).to(device)*0.5
+    beta = torch.ones((1, 500)).to(device)*0.5
+    # beta = torch.from_numpy(np.load("./98/params/beta.npy")).to(device)
+    print(f"Dimension of the loaded beta: {beta.shape}")
     theta = torch.ones((1, 72)).to(device)*0.5
     trans = torch.zeros((1, 3)).to(device)
     
+    body_mesh_points, skeleton, eyes = rabit(beta, theta, trans)
+    body_mesh_points = body_mesh_points.detach().cpu().numpy().reshape(-1, 3)
+    skeleton = skeleton.detach().cpu().numpy().reshape(-1, 3)
+
+
     # You can also load some pose.npy from dataset here
     temp = np.zeros((24, 3)) # temp = np.load("../pose.npy")
     theta = torch.from_numpy(temp).to(device)
@@ -279,6 +315,10 @@ if __name__ == '__main__':
     body_mesh_points = body_mesh_points.detach().cpu().numpy().reshape(-1, 3)
 
     mesh = om.PolyMesh(points=body_mesh_points, face_vertex_indices=faces)
-    om.write_mesh("output/rabit.obj", mesh)
-    om.write_mesh("output/rabit_eyes.obj", eyes[0])
-    print("the .obj model with its eyes has been generated")
+    om.write_mesh("./98_rabit.obj", mesh)
+    print("Mesh saved!!!")
+    # om.write_mesh("output/rabit_eyes.obj", eyes[0])
+    # print("the .obj model with its eyes has been generated")
+    print("Successfully executed the code!!")
+
+

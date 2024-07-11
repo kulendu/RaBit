@@ -1,7 +1,8 @@
 import sys
 import joblib
 import pickle
-
+from smplx import SMPL
+import trimesh
 import argparse
 
 import torch
@@ -140,6 +141,14 @@ class RabitModel_eye(nn.Module):
                         {'params': self.rabit_params["theta"], 'lr': self.learning_rate},
                         {'params': self.rabit_params["trans"],'lr': self.learning_rate},
                         {'params': self.rabit_params["offset"], 'lr': self.learning_rate}])
+        
+        # optimzer for the pose loop
+        self.optimizer2 = optim.Adam([{'params': self.rabit_params["scale"], 'lr': self.learning_rate},
+                        {'params': self.rabit_params["beta"], 'lr': 0},
+                        {'params': self.rabit_params["theta"], 'lr': self.learning_rate},
+                        {'params': self.rabit_params["trans"],'lr': self.learning_rate},
+                        {'params': self.rabit_params["offset"], 'lr': self.learning_rate}])
+                         
                          
 
     def forward(self, beta, pose, trans):
@@ -361,8 +370,11 @@ class RabitModel_eye(nn.Module):
 def get_local_joints(data,model): 
     # Get 24x3 SMPl joints using mean of vertices
     # Refer: https://github.com/mkocabas/VIBE/issues/18
-    verts = data['verts']
-    J_regressor = model['J_regressor']
+    # verts = data['verts']
+    # J_regressor = model['J_regressor']
+    verts = SMPL2RabitRetargetter.smpl_model['vertex_ids']
+    J_regressor = SMPL2RabitRetargetter.smpl_model['J_regressor']
+    # verts = SMPL2RabitRetargetter.smpl_model['ver']
     local_joints = np.einsum('jv,tvd->tjd',J_regressor.toarray(),verts)
     return local_joints
 
@@ -527,7 +539,20 @@ class SMPL2RabitRetargetter:
             
 
         self.visualize(video_dir=None)
-     
+
+    # loading the vertices from the SMPL model 
+    '''
+    TO-DOs:
+    1. Pass the poses of the VIBE to the SMPL model class
+    2. In the get_local_joints function replace the joints and the vertices
+    '''
+    smpl_path = './SMPL_NEUTRAL.pkl'
+    smpl_model = SMPL(model_path=smpl_path, gender='neutral', create_transl=False) # deforming mesh from the SMPL model - smplx
+    
+    # defining the vertices and the faces
+    # vertices = trimesh
+    # faces = 
+
         
     # retargetter module
     def stage_2_pose_parameters_matching(self):
@@ -561,7 +586,7 @@ class SMPL2RabitRetargetter:
             loss_theta_norm = (self.rabit.rabit_params['theta'] - 0.5).norm() # Force Beta values to be near their mean. Not useful 
             loss_beta_norm = (self.rabit.rabit_params['beta'] - 0.5).norm()
 
-            self.rabit.optimizer.zero_grad() # setting gradients to 0
+            self.rabit.optimizer2.zero_grad() # setting gradients to 0
             
             # loss = l2_loss + 0.01*loss_beta_norm + 1*loss_offset_min
             # loss = l2_loss +  0.005*loss_offset_min
@@ -569,6 +594,7 @@ class SMPL2RabitRetargetter:
 
 
             loss.backward()
+            # self.rabit.rabit_params["beta"].grad[:]=0
             print(f'Iteration: {step} Loss ---  Total:{loss.data.item()} L2:{l2_loss.data.item()} Offset: {loss_offset_min.data.item()} Theta:{loss_theta_norm.data.item()} Betas:{loss_theta_norm.data.item()}')
 
             # Update which beta parameters will be updated
@@ -577,7 +603,7 @@ class SMPL2RabitRetargetter:
             #     self.rabit.rabit_params['beta'].grad[self.rabit.MAX_BETA_UPDATE_DIM:] = 0 
 
 
-            self.rabit.optimizer.step() # updating the pose and shape params
+            self.rabit.optimizer2.step() # updating the pose and shape params
 
 
 
