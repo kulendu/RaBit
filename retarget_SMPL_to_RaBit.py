@@ -1,3 +1,4 @@
+import os
 import sys
 import joblib
 import pickle
@@ -51,7 +52,7 @@ class RabitModel_eye(nn.Module):
 
         # Hyperparameters
         self.learning_rate = 1e-2
-        self.MAX_BETA_UPDATE_DIM = 10 
+        self.MAX_BETA_UPDATE_DIM = 6 # After 6 dimensions, the tail starts to invert 
 
 
     def prepare(self):
@@ -380,22 +381,22 @@ def get_local_joints(data,model):
 
 
 RaBit_to_SMPL_joint_correspondences = [
- [0,12],
+ [9,12],
  [1,0],
- [2,3],
+#  [2,6],
  [3,9],
- [4,16],
+#  [4,13], # Left collarbone
  [6,18],
  [7,20],
  [8,22],
- [10,15],
+#  [10,15], # Neck collarbone
  [11,1],
  [12,4],
  [13,2],
  [14,5],
  [15,7],
  [16,10],
- [17,17],
+#  [17,14], # Right collarbone
  [19,19],
  [20,21],
  [21,23],
@@ -427,6 +428,10 @@ class SMPL2RabitRetargetter:
             self.data['joints3d'] = self.data['joints3d'][:2]
             self.data['verts'] = self.data['verts'][:2]
             self.data['pose'] = self.data['pose'][:2]
+        else: 
+            self.data['joints3d'] = self.data['joints3d'][::5]
+            self.data['verts'] = self.data['verts'][::5]
+            self.data['pose'] = self.data['pose'][::5]
 
         self.data['smpl_joints'] = get_local_joints(self.data,self.smpl) # Use SMPL J-regressor to get smpl joints (root retative)    
         self.smpl['parent_array'] = self.smpl['kintree_table'][0]
@@ -449,6 +454,7 @@ class SMPL2RabitRetargetter:
         pose = output[1]['pose']
         print(output[1].keys())
 
+        
         return output[1]
 
 
@@ -496,14 +502,18 @@ class SMPL2RabitRetargetter:
             '''l2_loss = (RaBit joints - SMPL joints)**2'''
             
             loss_offset_min = self.rabit.rabit_params['offset'].norm() # Add offset between the joint positions of RaBit and SMPL. Not useful
-            loss_beta_norm = (self.rabit.rabit_params['beta'] - 0.5).norm() # Force Beta values to be near their mean. Not useful 
+            loss_beta_norm = (self.rabit.rabit_params['beta'] - 0.5).norm() # Force Beta values to be near their mean. Loss value above 0.5 gives degenerate results. Around 0.23 is fine. 
 
 
             self.rabit.optimizer.zero_grad() # setting gradients to 0
             
-            # loss = l2_loss + 0.01*loss_beta_norm + 1*loss_offset_min
-            # loss = l2_loss +  0.005*loss_offset_min
             loss = l2_loss
+            loss += 0.01*loss_beta_norm # 0.01 is perfect givens 0.23 beta loss term. 0.001 is too low; 0.1 is too high  
+            
+            # loss = l2_loss + 0.01*loss_beta_norm + 1*loss_offset_min
+
+            # loss = l2_loss +  0.005*loss_offset_min
+            # loss = l2_loss
 
 
             loss.backward()
@@ -539,6 +549,7 @@ class SMPL2RabitRetargetter:
             
 
         self.visualize(video_dir=None)
+<<<<<<< HEAD
 
     # loading the vertices from the SMPL model 
     '''
@@ -553,28 +564,78 @@ class SMPL2RabitRetargetter:
     # vertices = trimesh
     # faces = 
 
+=======
+        
+        # Save rabit parameters from stage-1
+        torch.save(self.rabit.state_dict(), self.args.save)
+     
+>>>>>>> 3cd4f3fd0ca512bf79711fa5a5485ace07083409
         
     # retargetter module
     def stage_2_pose_parameters_matching(self):
+
+        # self.visualize(video_dir=None)       
+
+        # Load previous saved resutls from stage-1
+        if os.path.isfile(self.args.save):
+            try:
+                self.rabit.load_state_dict(torch.load(self.args.save))
+            except Exception as e:
+                print("Unable to load recomputed rabit parameters. Error:", e)
 
 
         rabit_joints = RaBit_to_SMPL_joint_correspondences[:,0].astype(int)
         SMPL_joints = RaBit_to_SMPL_joint_correspondences[:,1].astype(int)
 
-        self.visualize(video_dir=None)        
 
+        # Load VIBE/AMASS joint locations
+        self.data = self.load_VIBE_data(self.args.file)
+
+        # Convert to from opengl format 
+        self.data['verts'][...,[1,2]] *= -1
+
+
+
+        if self.args.debug: 
+            self.data['joints3d'] = self.data['joints3d'][:2]
+            self.data['verts'] = self.data['verts'][:2]
+            self.data['pose'] = self.data['pose'][:2]
+        else:
+            self.data['joints3d'] = self.data['joints3d'][::5]
+            self.data['verts'] = self.data['verts'][::5]
+            self.data['pose'] = self.data['pose'][::5]
+
+        self.data['smpl_joints'] = get_local_joints(self.data,self.smpl) # Use SMPL J-regressor to get smpl joints (root retative)
+
+
+        self.visualize(video_dir=None)       
 
         # Target joints: from np array to torch arrays
         joints3d = torch.from_numpy(self.data['smpl_joints']).to(torch.float32)
         joints3d = joints3d.to(device)
 
         self.rabit.rabit_params["theta"].requires_grad = True
-        self.rabit.rabit_params["beta"].requires_grad = False
+        self.rabit.rabit_params["beta"].requires_grad = True
         self.rabit.rabit_params["trans"].requires_grad = True
+        self.rabit.rabit_params["offset"].requires_grad = False # Don't update offset. Not positive outcome
+
+        self.learning_rate = 0.1
+
+        self.optimizer = optim.Adam([
+                                     {'params': self.rabit.rabit_params["scale"], 'lr': self.learning_rate},
+                                     {'params': self.rabit.rabit_params["theta"], 'lr': self.learning_rate},
+                                     {'params': self.rabit.rabit_params["trans"],'lr': self.learning_rate},
+                                     {'params': self.rabit.rabit_params["beta"], 'lr': 0.1*self.learning_rate}, # Updating too fast. Reducing speed to give for slower update
+                                     {'params': self.rabit.rabit_params["offset"], 'lr': self.learning_rate}, # Updating too fast. Reducing speed to give for slower update
+                                     ])
+
+
 
         for step in range(200):
             # self.rabit_params["theta"].requires_grad = True
             # self.rabit_params["beta"].requires_grad = False
+
+            print(self.rabit.rabit_params['beta'][:self.rabit.MAX_BETA_UPDATE_DIM])
 
             # self.rabit.rabit_params['']
             body_mesh_points, kps,kps_offset, eyes = self.rabit(self.rabit.rabit_params['beta'], self.rabit.rabit_params['theta'], self.rabit.rabit_params['trans'])
@@ -583,27 +644,42 @@ class SMPL2RabitRetargetter:
             '''l2_loss = (RaBit joints - SMPL joints)**2'''
             
             loss_offset_min = self.rabit.rabit_params['offset'].norm() # Add offset between the joint positions of RaBit and SMPL. Not useful
-            loss_theta_norm = (self.rabit.rabit_params['theta'] - 0.5).norm() # Force Beta values to be near their mean. Not useful 
-            loss_beta_norm = (self.rabit.rabit_params['beta'] - 0.5).norm()
+            loss_theta_norm = (self.rabit.rabit_params['theta']**2).mean() # Force theta values to be near their mean. Not useful 
+            loss_beta_norm = (self.rabit.rabit_params['beta'] - 0.5).norm()**2 # Force Beta values to be near their mean. Not useful
 
+<<<<<<< HEAD
             self.rabit.optimizer2.zero_grad() # setting gradients to 0
+=======
+            self.optimizer.zero_grad() # setting gradients to 0
+>>>>>>> 3cd4f3fd0ca512bf79711fa5a5485ace07083409
             
             # loss = l2_loss + 0.01*loss_beta_norm + 1*loss_offset_min
             # loss = l2_loss +  0.005*loss_offset_min
             loss = l2_loss
+            # loss += 0.0001*loss_beta_norm 
+            loss += 0.01*loss_theta_norm # Very small loss on theta to prevent degenreate poses. Less than 
+            # loss += 0.1*loss_offset_min # Very small loss on theta to prevent degenreate poses. Less than 
 
 
             loss.backward()
+<<<<<<< HEAD
             # self.rabit.rabit_params["beta"].grad[:]=0
             print(f'Iteration: {step} Loss ---  Total:{loss.data.item()} L2:{l2_loss.data.item()} Offset: {loss_offset_min.data.item()} Theta:{loss_theta_norm.data.item()} Betas:{loss_theta_norm.data.item()}')
+=======
+            print(f'Iteration: {step} Loss ---  Total:{loss.data.item()} L2:{l2_loss.data.item()} Offset: {loss_offset_min.data.item()} Theta:{loss_theta_norm.data.item()} Betas:{loss_beta_norm.data.item()}')
+>>>>>>> 3cd4f3fd0ca512bf79711fa5a5485ace07083409
 
             # Update which beta parameters will be updated
             # if the gradients of the betas is not None, then set the gradients beyond a certain limit (MAX_BETA_UPDATE_DIM) to 0
-            # if self.rabit.rabit_params['beta'].grad is not None:
-            #     self.rabit.rabit_params['beta'].grad[self.rabit.MAX_BETA_UPDATE_DIM:] = 0 
+            if self.rabit.rabit_params['beta'].grad is not None:
+                self.rabit.rabit_params['beta'].grad[self.rabit.MAX_BETA_UPDATE_DIM:] = 0 
 
 
+<<<<<<< HEAD
             self.rabit.optimizer2.step() # updating the pose and shape params
+=======
+            self.optimizer.step() # updating the pose and shape params
+>>>>>>> 3cd4f3fd0ca512bf79711fa5a5485ace07083409
 
 
 
@@ -623,8 +699,23 @@ class SMPL2RabitRetargetter:
 
 
         self.vis.render_shape_iteration_video(image_name=f"pose_iteration",video_dir="demo")
-        self.visualize(video_dir=None)
+
+
+
+        # self.visualize(video_dir=None)
         
+
+        torch.save(self.rabit.state_dict(), self.args.save)
+        
+        self.rabit.rabit_params['trans'].data[:,0] += self.rabit.rabit_params['scale']*0.5    
+        self.rabit.rabit_params['beta'].data[:] = 0.5
+
+        self.visualize(video_dir="demo2")
+        
+
+
+
+
         # Init root pose
         # with torch.no_grad():
         #     self.rabit.rabit_params['theta'][:,:3] = torch.from_numpy(self.data['pose'][:,:3])     
@@ -634,7 +725,7 @@ class SMPL2RabitRetargetter:
 
 
     def retarget(self): 
-        self.stage_1_shape_parameters_matching()
+        # self.stage_1_shape_parameters_matching()
         self.stage_2_pose_parameters_matching()
 
     def visualize(self,video_dir=None):    
@@ -644,11 +735,11 @@ class SMPL2RabitRetargetter:
                       'joints3d': kps.detach().cpu().numpy(),
                       'joints3d_offset': kps_offset.detach().cpu().numpy(),
                       'parent': self.rabit.parent,
-                       'faces': self.rabit.faces }
+                        'faces': self.rabit.faces,
+                        'color': np.argmax(self.rabit.weightMatrix,axis=1) }
 
         self.vis.render_rabit(rabit_data, self.data, self.smpl, corresp=corresp, video_dir=video_dir)
 
-        
         
 if __name__ == '__main__':
 
@@ -659,6 +750,7 @@ if __name__ == '__main__':
                         description='Retargets from SMPL to RaBit',
                         epilog='')
     parser.add_argument('--file',type=str, default="../data/SMPL/vibe_output.pkl", help="Path to .trc file that needs to be retargeted.")  # path to trc file
+    parser.add_argument('--save',type=str, default="../data/SMPL/retarget.pt", help="Path to .trc file that needs to be retargeted.")  # path to trc file
     parser.add_argument('--amass',type=str, default="./AMASS_pose.pkl", help="Path to the pkl file for AMASS data.")  # path to trc file
     parser.add_argument('--smpl', default="SMPL_NEUTRAL.pkl", help="Path to .pkl SMPL model used for pose estimation")
     parser.add_argument('-f', '--force',action='store_true',help="forces a re-run on retargetting even if pkl file containg smpl data is already present.")  # on/off flag

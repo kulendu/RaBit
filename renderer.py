@@ -4,6 +4,8 @@ import numpy as np
 from tqdm import tqdm
 import polyscope as ps 
 
+import matplotlib.pyplot as plt
+
 # ps.init()
 # from retarget_SMPL_to_RaBit import load_SMPL_model
 # import trimesh 
@@ -23,13 +25,79 @@ class Visualizer:
 		# ps.set_ground_plane_mode('shadow_only')
 
 
+		self.colors = np.array([])
+
 	def reflect_opengl(self, points):
 		points[..., 0]*= -1
 		points[..., 1]*= -1
 
 		return points
 	
+	def get_viridis_color(self,vals,min_val=0,max_val=1):
+		"""
+			get viridis colormap
+		"""
 
+		vals = vals.astype(np.float32)
+		vals = (vals -min_val)/(max_val - min_val) # Normalize 
+
+		colors = plt.get_cmap('viridis')(vals)
+
+		return colors[:,:3]
+
+
+	def get_color_from_labels(self,labels):
+		num_labels = int(np.unique(labels).max())+1
+
+		if num_labels > self.colors.shape[0]:
+
+			colors = []
+			for i in range(num_labels):
+				if i < 10:
+					colors.append(plt.get_cmap("tab10")(i)[:3])
+				elif i < 22:
+					colors.append(plt.get_cmap("Paired")(i-10)[:3])
+				elif i < 30:
+					colors.append(plt.get_cmap("Accent")(i-22)[:3])
+				else:
+					colors.append(np.random.random(3))
+
+			self.colors = np.array(colors)
+		return self.colors[labels,:]
+
+	def get_color_from_matrix(self,weight_matrix):
+		# Given a weight matrix showing importance of each weight calculate color as weighted sum 
+		num_labels = weight_matrix.shape[1]
+
+		if num_labels > self.colors.shape[0]:
+
+			colors = []
+			for i in range(num_labels):
+				# if i < 10:
+				#     colors.append(plt.get_cmap("tab10")(i)[:3])
+				# elif i < 22:
+				#     colors.append(plt.get_cmap("Paired")(i-10)[:3])
+				# elif i < 30:
+				#     colors.append(plt.get_cmap("Accent")(i-22)[:3])
+				# else:
+				colors.append(np.random.random(3))
+
+			self.colors = np.array(colors)
+		return weight_matrix@self.colors[:num_labels,:]
+	
+	def get_color(self,color):
+		if color is None:
+			return None
+		elif len(np.squeeze(color).shape) == 1:         
+			color = color.astype(np.uint64)
+			# Get color from a label using matplotlib
+			return self.get_color_from_labels(color)
+		else: 
+			assert color.shape[-1] == 3 or color.shape[-1] == 4, f"Expected information in RGB(Nx3) or RGBA(Nx4) found:{color.shape}" 
+
+			# Normalize colors here for plotting
+			if color.max() > 1: color = color.astype(np.float64) / 255
+			return color
 
 	def render_rabit(self, rabit_data, SMPL_data, SMPL_model, corresp=None,video_dir=None): 
 		"""
@@ -82,7 +150,8 @@ class Visualizer:
 
 		# Rabit Mesh 
 		ps_rabit_mesh = ps.register_surface_mesh('RaBit Mesh',rabit_data['verts'][0],rabit_data['faces'],transparency=0.5)
-		
+		ps_rabit_mesh.add_color_quantity("Skinning Weights", self.get_color_from_labels(rabit_data['color']), enabled=True)
+
 		rabit_bone_array = np.array([[i,p] for i,p in enumerate(rabit_data['parent'])],dtype=np.int64)
 		rabit_bone_array[0,1] = 0
 
@@ -96,7 +165,7 @@ class Visualizer:
 			corresp_nodes = np.concatenate([ SMPL_data['smpl_joints'][0,corresp[0,:]], rabit_data['joints3d_offset'][0,corresp[1,:]]  ], axis=0)
 			corresp_edges = np.array([  (i, i+corresp.shape[1])  for i in range(corresp.shape[1])])
 
-			ps_corresp = ps.register_curve_network("Skeleton Correspodence", corresp_nodes,corresp_edges)
+			ps_corresp = ps.register_curve_network("Skeleton Correspodence", corresp_nodes,corresp_edges,radius=0.001)
 
 
 		if video_dir is None:
