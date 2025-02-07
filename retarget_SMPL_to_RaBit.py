@@ -579,7 +579,10 @@ class SMPL2RabitRetargetter:
         self.data['smpl_joints'] = get_local_joints(self.data,self.smpl) # Use SMPL J-regressor to get smpl joints (root retative)
 
 
-        self.visualize(video_dir=None)       
+        self.rabit.rabit_params['trans'].data[:,0] += self.rabit.rabit_params['scale']*0.5    
+        self.rabit.rabit_params['beta'].data[:] = 0.5
+
+        self.visualize(video_dir='demo3')       
 
         # Target joints: from np array to torch arrays
         joints3d = torch.from_numpy(self.data['smpl_joints']).to(torch.float32)

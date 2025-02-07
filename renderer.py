@@ -156,16 +156,16 @@ class Visualizer:
 		rabit_bone_array[0,1] = 0
 
 		ps_rabit_skeleton = ps.register_curve_network(f"RaBit Skeleton",rabit_data['joints3d'][0],rabit_bone_array,color=np.array([1,0,0]))
-		ps_rabit_skeleton_offset = ps.register_curve_network(f"RaBit Skeleton Offset",rabit_data['joints3d_offset'][0],rabit_bone_array,color=np.array([0.75,0.25,0]))
+		# ps_rabit_skeleton_offset = ps.register_curve_network(f"RaBit Skeleton Offset",rabit_data['joints3d_offset'][0],rabit_bone_array,color=np.array([0.75,0.25,0]))
 
 
 		# Plot correspondence 
-		if corresp is not None: 
-			print("Corresp:",corresp,corresp.shape)
-			corresp_nodes = np.concatenate([ SMPL_data['smpl_joints'][0,corresp[0,:]], rabit_data['joints3d_offset'][0,corresp[1,:]]  ], axis=0)
-			corresp_edges = np.array([  (i, i+corresp.shape[1])  for i in range(corresp.shape[1])])
+		# if corresp is not None: 
+		# 	print("Corresp:",corresp,corresp.shape)
+		# 	corresp_nodes = np.concatenate([ SMPL_data['smpl_joints'][0,corresp[0,:]], rabit_data['joints3d_offset'][0,corresp[1,:]]  ], axis=0)
+		# 	corresp_edges = np.array([  (i, i+corresp.shape[1])  for i in range(corresp.shape[1])])
 
-			ps_corresp = ps.register_curve_network("Skeleton Correspodence", corresp_nodes,corresp_edges,radius=0.001)
+		# 	ps_corresp = ps.register_curve_network("Skeleton Correspodence", corresp_nodes,corresp_edges,radius=0.001)
 
 
 		if video_dir is None:
